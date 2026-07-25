@@ -2,33 +2,11 @@
 #include "timer.h"
 #include "AndroidImgui.h"     
 #include "GraphicsManager.h" 
-#include "Log.h"
-#include "rtcore_device.h"
 
 timer FPS限制;
 
-static bool CheckEmbree() {
-    LOGI("CheckEmbree: attempting to create Embree device...");
-    RTCDevice dev = rtcNewDevice(nullptr);
-    if (!dev) {
-        LOGE("CheckEmbree: rtcNewDevice returned NULL");
-        return false;
-    }
-    enum RTCError err = rtcGetDeviceError(dev);
-    LOGI("CheckEmbree: rtcNewDevice OK, rtcGetDeviceError = %d", (int)err);
-    rtcReleaseDevice(dev);
-    return true;
-}
-
 int main(int argc, char *argv[]) {
     ::graphics = GraphicsManager::getGraphicsInterface(GraphicsManager::VULKAN);
-
-    // Verify embree availability early
-    if (!CheckEmbree()) {
-        LOGE("Embree check failed - continuing without embree (change behavior if needed)");
-    } else {
-        LOGI("Embree check succeeded");
-    }
 
     ::screen_config(); 
     ::native_window_screen_x = (::displayInfo.height > ::displayInfo.width ? ::displayInfo.height : ::displayInfo.width);
