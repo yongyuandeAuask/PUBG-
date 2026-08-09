@@ -9,58 +9,184 @@
 #define PARADISE_GYRO_MASK_UNCAL (1u << 1)
 #define PARADISE_GYRO_MASK_ALL (PARADISE_GYRO_MASK_GYRO | PARADISE_GYRO_MASK_UNCAL)
 
-#define HW_BP_TYPE_R  1
-#define HW_BP_TYPE_W  2
-#define HW_BP_TYPE_RW 3
-#define HW_BP_TYPE_X  4
 
-#define MAX_MODIFY_REGS 10
-#define MAX_HIT_RECORDS 16
+#define PARADISE_BP_OP_NONE    0x0
+#define PARADISE_BP_OP_READ    0x1
+#define PARADISE_BP_OP_WRITE   0x2
+#define PARADISE_HWBP_MAX_POINTS 16
+#define PARADISE_HWBP_MAX_RECORDS 256
 
-typedef struct paradise_tracking_data {
-    bool is_active;
-    uintptr_t bp_addr;
-    float x;
-    float y;
-    float z;
-} TRACKING_DATA;
+enum paradise_hwbp_type {
+    PARADISE_HWBP_EMPTY = 0,
+    PARADISE_HWBP_READ = 1,
+    PARADISE_HWBP_WRITE = 2,
+    PARADISE_HWBP_READ_WRITE = 3,
+    PARADISE_HWBP_EXECUTE = 4,
+};
 
-typedef struct paradise_hw_bp_info {
-    pid_t pid;
-    uintptr_t addr;
-    int type;
-    int len;
-    bool is_write_gp_regs;
-    int gp_reg_count;
-    int gp_reg_indices[MAX_MODIFY_REGS];
-    uint64_t gp_reg_values[MAX_MODIFY_REGS];
-    bool is_write_fp_regs;
-    int fp_reg_count;
-    int fp_reg_indices[MAX_MODIFY_REGS];
-    uint64_t fp_reg_values[MAX_MODIFY_REGS][2];
-} HW_BP_INFO;
+enum paradise_hwbp_scope {
+    PARADISE_HWBP_MAIN_THREAD = 0,
+    PARADISE_HWBP_OTHER_THREADS = 1,
+    PARADISE_HWBP_ALL_THREADS = 2,
+};
 
-typedef struct paradise_regs_info {
-    uint64_t regs[31];
-    uint64_t sp;
+enum paradise_hwbp_register {
+    PARADISE_REG_PC = 0,
+    PARADISE_REG_HIT_COUNT,
+    PARADISE_REG_LR,
+    PARADISE_REG_SP,
+    PARADISE_REG_ORIG_X0,
+    PARADISE_REG_SYSCALLNO,
+    PARADISE_REG_PSTATE,
+    PARADISE_REG_X0,
+    PARADISE_REG_X1,
+    PARADISE_REG_X2,
+    PARADISE_REG_X3,
+    PARADISE_REG_X4,
+    PARADISE_REG_X5,
+    PARADISE_REG_X6,
+    PARADISE_REG_X7,
+    PARADISE_REG_X8,
+    PARADISE_REG_X9,
+    PARADISE_REG_X10,
+    PARADISE_REG_X11,
+    PARADISE_REG_X12,
+    PARADISE_REG_X13,
+    PARADISE_REG_X14,
+    PARADISE_REG_X15,
+    PARADISE_REG_X16,
+    PARADISE_REG_X17,
+    PARADISE_REG_X18,
+    PARADISE_REG_X19,
+    PARADISE_REG_X20,
+    PARADISE_REG_X21,
+    PARADISE_REG_X22,
+    PARADISE_REG_X23,
+    PARADISE_REG_X24,
+    PARADISE_REG_X25,
+    PARADISE_REG_X26,
+    PARADISE_REG_X27,
+    PARADISE_REG_X28,
+    PARADISE_REG_X29,
+    PARADISE_REG_FPSR,
+    PARADISE_REG_FPCR,
+    PARADISE_REG_Q0,
+    PARADISE_REG_Q1,
+    PARADISE_REG_Q2,
+    PARADISE_REG_Q3,
+    PARADISE_REG_Q4,
+    PARADISE_REG_Q5,
+    PARADISE_REG_Q6,
+    PARADISE_REG_Q7,
+    PARADISE_REG_Q8,
+    PARADISE_REG_Q9,
+    PARADISE_REG_Q10,
+    PARADISE_REG_Q11,
+    PARADISE_REG_Q12,
+    PARADISE_REG_Q13,
+    PARADISE_REG_Q14,
+    PARADISE_REG_Q15,
+    PARADISE_REG_Q16,
+    PARADISE_REG_Q17,
+    PARADISE_REG_Q18,
+    PARADISE_REG_Q19,
+    PARADISE_REG_Q20,
+    PARADISE_REG_Q21,
+    PARADISE_REG_Q22,
+    PARADISE_REG_Q23,
+    PARADISE_REG_Q24,
+    PARADISE_REG_Q25,
+    PARADISE_REG_Q26,
+    PARADISE_REG_Q27,
+    PARADISE_REG_Q28,
+    PARADISE_REG_Q29,
+    PARADISE_REG_Q30,
+    PARADISE_REG_Q31,
+    PARADISE_REG_COUNT,
+};
+
+#define PARADISE_BP_SET_MASK(record, reg, op)                       \
+    do {                                                            \
+        int byte_index = (reg) >> 2;                                \
+        int bit_offset = ((reg) & 0x3) << 1;                        \
+        (record)->mask[byte_index] &= ~(0x3 << bit_offset);         \
+        (record)->mask[byte_index] |= ((op) & 0x3) << bit_offset;   \
+    } while (0)
+
+#define PARADISE_BP_GET_MASK(record, reg) \
+    (((record)->mask[(reg) >> 2] >> (((reg) & 0x3) << 1)) & 0x3)
+
+struct paradise_hwbp_record {
+    uint8_t mask[18];
+    uint64_t hit_count;
     uint64_t pc;
+    uint64_t lr;
+    uint64_t sp;
+    uint64_t orig_x0;
+    uint64_t syscallno;
     uint64_t pstate;
-} REGS_INFO;
+    uint64_t x0, x1, x2, x3, x4, x5, x6, x7, x8, x9;
+    uint64_t x10, x11, x12, x13, x14, x15, x16, x17, x18, x19;
+    uint64_t x20, x21, x22, x23, x24, x25, x26, x27, x28, x29;
+    uint32_t fpsr;
+    uint32_t fpcr;
+    __uint128_t q0, q1, q2, q3, q4, q5, q6, q7, q8, q9;
+    __uint128_t q10, q11, q12, q13, q14, q15, q16, q17, q18, q19;
+    __uint128_t q20, q21, q22, q23, q24, q25, q26, q27, q28, q29;
+    __uint128_t q30, q31;
+};
 
-typedef struct paradise_hwbp_hit_item {
-    pid_t task_id;
-    uintptr_t hit_addr;
-    uint64_t hit_time;
-    REGS_INFO regs_info;
-} HWBP_HIT_ITEM;
+struct paradise_hwbp_point_config {
+    uint64_t address;
+    uint32_t type;
+    uint32_t length;
+    uint32_t scope;
+    uint32_t reserved;
+};
 
-typedef struct paradise_hwbp_hit_args {
-    pid_t pid;
-    uintptr_t addr;
-    HWBP_HIT_ITEM *out_buf;
-    int out_len;
-    int real_count;
-} HWBP_HIT_ARGS;
+struct paradise_hwbp_config {
+    int32_t tgid;
+    uint32_t point_count;
+    uint64_t num_brps;
+    uint64_t num_wrps;
+    paradise_hwbp_point_config points[PARADISE_HWBP_MAX_POINTS];
+};
+
+static_assert(sizeof(paradise_hwbp_record) == 848,
+              "paradise_hwbp_record ABI mismatch");
+static_assert(sizeof(paradise_hwbp_config) == 408,
+              "paradise_hwbp_config ABI mismatch");
+
+/* 参考模块 touch_get_status() 的原始触摸设备状态，固定为 136 字节。 */
+struct paradise_touch_status {
+    int32_t installed;
+    int32_t patched_uid;
+    char patched_path[64];
+    char patched_comm[16];
+    int32_t abs_x_min;
+    int32_t abs_x_max;
+    int32_t abs_y_min;
+    int32_t abs_y_max;
+    int32_t has_mt_slot;
+    int32_t has_mt_tracking_id;
+    int32_t has_btn_touch;
+    int32_t last_reject_reason;
+    uint32_t reject_uid_count;
+    uint32_t reject_name_count;
+    uint32_t reject_path_count;
+    uint32_t reject_caps_count;
+};
+
+static_assert(sizeof(paradise_touch_status) == 136,
+              "paradise_touch_status ABI mismatch");
+static_assert(offsetof(paradise_touch_status, patched_path) == 8 &&
+              offsetof(paradise_touch_status, patched_comm) == 72 &&
+              offsetof(paradise_touch_status, abs_x_min) == 88 &&
+              offsetof(paradise_touch_status, abs_x_max) == 92 &&
+              offsetof(paradise_touch_status, abs_y_min) == 96 &&
+              offsetof(paradise_touch_status, abs_y_max) == 100 &&
+              offsetof(paradise_touch_status, reject_caps_count) == 132,
+              "paradise_touch_status field layout mismatch");
 
 class paradise_driver {
 private:
@@ -85,22 +211,6 @@ public:
     
     // 获取模块基址，传入模块名，从内核层安全获取模块基址
     uintptr_t get_module_base(const char *name);
-
-    // 获取模块映射范围 [base, end)，end 为最高一段 VMA 的 vm_end，便于一次覆盖整个 so，如 libc 多段
-    bool get_module_range(const char *name, uintptr_t *base_out, uintptr_t *end_out);
-
-    // 获取模块结束地址，传入模块名，从内核层安全获取模块结束地址
-    uintptr_t get_module_end(const char *name);
-
-    /*
-    用法示例：
-        uintptr_t lo, hi;
-        if (get_module_range("libc.so", &lo, &hi)) {
-            // 映射包络为 [lo, hi)，按需分段读取
-        }
-        // 或仅获取结束地址：
-        uintptr_t end = get_module_end("libc.so");
-    */
     
     // 更新陀螺仪数据
     bool gyro_update(float x, float y, uint32_t type_mask = PARADISE_GYRO_MASK_ALL, bool enable = true);
@@ -116,27 +226,38 @@ public:
     
     // 获取进程列表位图
     bool list_processes(uint8_t *bitmap, size_t bitmap_size, size_t *process_count_out);
+
+    // 获取进程主线程的 TPIDR_EL0。
+    uintptr_t get_main_thread_elf0(pid_t target_pid);
+
+    // 获取指定线程的 TPIDR_EL0。
+    uintptr_t get_thread_tpidr_el0(pid_t tid);
+
+    // 获取指定线程的 PACGA 密钥及算法编号。
+    bool get_thread_pacga_key(pid_t tid, uint64_t *lo, uint64_t *hi,
+                              uint32_t *algo = nullptr);
+
+    // 获取指定线程的 PACIA 密钥及算法编号。
+    bool get_thread_pacia_key(pid_t tid, uint64_t *lo, uint64_t *hi,
+                              uint32_t *algo = nullptr);
+
+    // 将 tid 的 PACGA 密钥绑定为 target_tid 的 PACGA 密钥。
+    bool bind_thread_pacga_key(pid_t tid, pid_t target_tid);
     
-    // 硬件层读取数据，传入地址、接收指针、类型大小
+    // 读取，传入地址、接收指针、类型大小
     bool read(uintptr_t addr, void *buffer, size_t size);
     
-    // 硬件层修改数据，传入地址、数据指针、类型大小
+    // 写入，传入地址、数据指针、类型大小
     bool write(uintptr_t addr, void *buffer, size_t size);
 
-    // 内核层映射读取数据，传入地址、接收指针、类型大小
-    bool read_fast(uintptr_t addr, void *buffer, size_t size);
+    // 初始化触摸注入；touch_down 的 X 使用短边域，Y 使用长边域
+    bool touch_init(int abs_screen_x, int abs_screen_y);
 
-    // 内核层映射修改数据，传入地址、数据指针、类型大小
-    bool write_fast(uintptr_t addr, void *buffer, size_t size);
+    // 获取参考实现记录的触摸设备状态与 ABS 原始坐标范围
+    bool touch_get_status(paradise_touch_status *status_out);
 
-    // 初始化触摸注入，传入用户屏幕分辨率用于坐标映射
-    bool touch_init(int screen_width, int screen_height);
-
-    // 手指按下
+    // 手指按下；直接传屏幕坐标，驱动自动换算到设备 ABS 范围
     bool touch_down(int slot, int x, int y);
-
-    // 手指移动
-    bool touch_move(int slot, int x, int y);
 
     // 手指抬起
     bool touch_up(int slot);
@@ -144,56 +265,27 @@ public:
     // 销毁触摸注入
     bool touch_destroy();
 
-    // Install one RT-style breakpoint for an exact thread and address.
-    bool hwbp_add(const HW_BP_INFO *info);
 
-    // Read the RT hit queue. This handler intentionally does not enqueue hits.
-    bool hwbp_get_hits(HWBP_HIT_ARGS *args);
+    // 设置最多 16 个 ARM64 执行断点/访问观察点。
+    bool hwbp_set(const paradise_hwbp_point_config *points, size_t point_count);
 
-    // Update register values and enable an installed breakpoint.
-    bool hwbp_enable(const HW_BP_INFO *info);
+    // 删除当前硬件断点/观察点并清理所有 CPU 调试寄存器。
+    bool hwbp_remove();
 
-    // Remove every installed breakpoint.
-    bool hwbp_clear();
+    // 获取当前配置以及 CPU 支持的 BRP/WRP 数量。
+    bool hwbp_get_config(paradise_hwbp_config *config_out);
 
-    // Disable one breakpoint without removing it.
-    bool hwbp_disable(pid_t target_pid, uintptr_t addr);
+    // 分段读取指定点位按触发 PC 聚合的现场记录。
+    bool hwbp_get_records(uint32_t point_index, uint32_t start_index,
+                          paradise_hwbp_record *records, uint32_t capacity,
+                          uint32_t *count_out);
 
-    // Update the optional tracking coordinate override.
-    bool hwbp_update_tracking(const TRACKING_DATA *data);
+    // 写回一条记录及其 2-bit 寄存器操作掩码。
+    bool hwbp_set_record(uint32_t point_index, uint32_t record_index,
+                         const paradise_hwbp_record *record);
 
-    // 直接读取目标进程的浮点寄存器
-    // reg_mask: bit0=V0, bit1=V1, ... bit31=V31
-    // vregs_out: 128-bit * 32 输出缓冲区, fpsr_out/fpcr_out: 状态寄存器输出
-    bool fpr_read(pid_t target_pid, uint32_t reg_mask,
-                  uint8_t vregs_out[32][16], uint32_t *fpsr_out, uint32_t *fpcr_out);
-
-    // 直接写入目标进程的浮点寄存器
-    // reg_mask: 哪些 V 寄存器需要写入
-    // vregs: 128-bit * 32 输入值
-    bool fpr_write(pid_t target_pid, uint32_t reg_mask,
-                   const uint8_t vregs[32][16]);
-
-    // 直接读取目标进程的通用寄存器 X0-X30 + SP + PC + PSTATE
-    bool gpr_read(pid_t target_pid, uint64_t regs_out[31],
-                  uint64_t *sp_out, uint64_t *pc_out, uint64_t *pstate_out);
-
-    // 直接写入目标进程的通用寄存器 X0-X30 + SP + PC
-    bool gpr_write(pid_t target_pid, const uint64_t regs[31],
-                   uint64_t sp, uint64_t pc);
-
-    // 批量写入 float 值到指定 V 寄存器的低 32 位
-    bool fpr_write_floats(pid_t target_pid, uint32_t count,
-                          const uint32_t reg_indices[8], const float values[8]);
-
-    // 同时完成读取和写入
-    bool fpr_read_modify_write(pid_t target_pid, uint32_t read_mask,
-                               uint32_t write_count, const uint32_t write_indices[8],
-                               const float write_values[8], uint8_t out_vregs[32][16]);
-
-    // 获取指定线程的 PACGA 密钥（ARMv8.3 Pointer Authentication Generic Key）
-    // tid: 线程 ID, lo/hi: APGAKey 低/高 64 位输出, algo: PAC 算法标识输出（可选）
-    bool get_pacga_key(pid_t tid, uint64_t *lo, uint64_t *hi, uint32_t *algo = nullptr);
+    // 清空一个点位的记录；point_index=-1 清空全部点位。
+    bool hwbp_clear_records(int32_t point_index = -1);
 
     // 模板方法，传入地址，返回地址上的值
     template <typename T>
@@ -210,23 +302,6 @@ public:
     bool write(uintptr_t addr, T value)
     {
         return this->write(addr, &value, sizeof(T));
-    }
-
-    // 基于 vmap 的模板读取
-    template <typename T>
-    T read_fast(uintptr_t addr)
-    {
-        T res{};
-        if (this->read_fast(addr, &res, sizeof(T)))
-            return res;
-        return {};
-    }
-
-    // 基于 vmap 的模板写入
-    template <typename T>
-    bool write_fast(uintptr_t addr, T value)
-    {
-        return this->write_fast(addr, &value, sizeof(T));
     }
 };
 
