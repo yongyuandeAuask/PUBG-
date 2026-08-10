@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
     vg = nvgCreateGLES3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
     
     // --- 修复字体加载 ---
-    g_font_agency = nvgCreateFontMem(vg, "agency", AgencyFB_Bold_ttf, (int)AgencyFB_Bold_ttf_len, 0);
+    g_font_agency = nvgCreateFontMem(vg, "agency", (unsigned char*)AgencyFB_Bold_ttf, (int)AgencyFB_Bold_ttf_len, 0);
     // g_font_icons = nvgCreateFontMem(vg, "icons", MaterialIcons_Regular_otf, (int)MaterialIcons_Regular_otf_len, 0);
     
     // 中文字体走系统（中文太大不嵌入）
