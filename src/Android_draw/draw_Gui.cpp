@@ -225,4 +225,155 @@ void DrawPlayerNVG(NVGcontext* vg) {
             nvgBeginPath(vg);
             nvgMoveTo(vg, px, 130.0f);
             nvgLineTo(vg, r_x, TOP);
-            nvgStrokeCo
+            nvgStrokeColor(vg, nvgRGBA(255, 0, 0, 255));
+            nvgStrokeWidth(vg, 1.0f);
+            nvgStroke(vg);
+        }
+
+        if (DrawIo[7]) {
+            char buf[32];
+            sprintf(buf, "0x%lx", Objaddr);
+            nvgFontSize(vg, 16.0f);
+            nvgFontFaceId(vg, g_nvg_font);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+            nvgFillColor(vg, nvgRGBA(239, 241, 245, 255));
+            nvgText(vg, MIDDLE, BOTTOM, buf, NULL);
+        }
+
+        if (DrawIo[4]) {
+            NVGcolor boneColor = nvgRGBA(255, 255, 0, 255);
+            nvgBeginPath(vg);
+            nvgCircle(vg, Head.X, Head.Y, W / 5.0f);
+            nvgStrokeColor(vg, boneColor);
+            nvgStrokeWidth(vg, 2.5f);
+            nvgStroke(vg);
+
+            auto drawBoneLine = [&](float x1, float y1, float x2, float y2) {
+                nvgBeginPath(vg);
+                nvgMoveTo(vg, x1, y1);
+                nvgLineTo(vg, x2, y2);
+                nvgStrokeColor(vg, boneColor);
+                nvgStrokeWidth(vg, 2.5f);
+                nvgStroke(vg);
+            };
+
+            drawBoneLine(Head.X, Head.Y, Chest.X, Chest.Y);
+            drawBoneLine(Chest.X, Chest.Y, Pelvis.X, Pelvis.Y);
+            drawBoneLine(Chest.X, Chest.Y, Left_Shoulder.X, Left_Shoulder.Y);
+            drawBoneLine(Chest.X, Chest.Y, Right_Shoulder.X, Right_Shoulder.Y);
+            drawBoneLine(Left_Shoulder.X, Left_Shoulder.Y, Left_Elbow.X, Left_Elbow.Y);
+            drawBoneLine(Right_Shoulder.X, Right_Shoulder.Y, Right_Elbow.X, Right_Elbow.Y);
+            drawBoneLine(Left_Elbow.X, Left_Elbow.Y, Left_Wrist.X, Left_Wrist.Y);
+            drawBoneLine(Right_Elbow.X, Right_Elbow.Y, Right_Wrist.X, Right_Wrist.Y);
+            drawBoneLine(Pelvis.X, Pelvis.Y, Left_Thigh.X, Left_Thigh.Y);
+            drawBoneLine(Pelvis.X, Pelvis.Y, Right_Thigh.X, Right_Thigh.Y);
+            drawBoneLine(Left_Thigh.X, Left_Thigh.Y, Left_Knee.X, Left_Knee.Y);
+            drawBoneLine(Right_Thigh.X, Right_Thigh.Y, Right_Knee.X, Right_Knee.Y);
+            drawBoneLine(Left_Knee.X, Left_Knee.Y, Left_Ankle.X, Left_Ankle.Y);
+            drawBoneLine(Right_Knee.X, Right_Knee.Y, Right_Ankle.X, Right_Ankle.Y);
+        }
+
+        if (DrawIo[5]) {
+            getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960));
+            nvgFontSize(vg, 28.0f);
+            nvgFontFaceId(vg, g_nvg_font);
+            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
+            nvgFillColor(vg, nvgRGBA(248, 248, 255, 255));
+            nvgText(vg, MIDDLE, TOP - 55, PlayerName, NULL);
+        }
+
+        if (DrawIo[6]) {
+            float healthPercent = 最大血量 > 0 ? (当前血量 / 最大血量) : 0.0f;
+            float barX = X;
+            float barY = TOP - 16 - 8;
+            float barWidth = W;
+            float barHeight = 8;
+
+            nvgBeginPath(vg);
+            nvgRect(vg, barX, barY, barWidth, barHeight);
+            nvgFillColor(vg, nvgRGBA(60, 60, 60, 255));
+            nvgFill(vg);
+
+            float fillWidth = barWidth * healthPercent;
+            nvgBeginPath(vg);
+            nvgRect(vg, barX, barY, fillWidth, barHeight);
+            nvgFillColor(vg, nvgRGBA(10, 240, 10, 255));
+            nvgFill(vg);
+
+            char healthText[16];
+            sprintf(healthText, "%.0f%%", healthPercent * 100);
+            nvgFontSize(vg, 14.0f);
+            nvgFontFaceId(vg, g_nvg_font);
+            nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+            nvgText(vg, barX + barWidth + 3, barY + barHeight * 0.5f, healthText, NULL);
+        }
+    }
+
+    nvgFontSize(vg, 50.0f);
+    nvgFontFaceId(vg, g_nvg_font);
+    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+    if (PlayerCount > 0) {
+        char countBuf[16];
+        snprintf(countBuf, sizeof(countBuf), "%d", PlayerCount);
+        nvgFillColor(vg, nvgRGBA(255, 0, 0, 255));
+        nvgText(vg, px, 50, countBuf, NULL);
+    } else {
+        nvgFillColor(vg, nvgRGBA(0, 255, 0, 255));
+        nvgText(vg, px, 50, "安全", NULL);
+    }
+}
+
+void Layout_tick_UI(bool* main_thread_flag) {
+    UpdateGameData();
+    static bool show_another_window = false;
+    {
+        static float f = 0.0f;
+        static int counter = 0;
+        static int style_idx = 0;
+        static ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+        ImGui::Begin("ImGui-UE4", main_thread_flag);
+        if (::permeate_record_ini) {
+            ImGui::SetWindowPos({ LastCoordinate.Pos_x, LastCoordinate.Pos_y });
+            ImGui::SetWindowSize({ LastCoordinate.Size_x, LastCoordinate.Size_y });
+            permeate_record_ini = false;
+        }
+        ImGui::Text("渲染模式 : %s, gui版本 : %s", graphics->RenderName, IMGUI_VERSION);
+        if (ImGui::Combo("##主题", &style_idx, "白色主题\0蓝色主题\0紫色主题\0")) {
+            switch (style_idx) {
+                case 0: ImGui::StyleColorsLight(); break;
+                case 1: ImGui::StyleColorsDark(); break;
+                case 2: ImGui::StyleColorsClassic(); break;
+            }
+        }
+        if (ImGui::Checkbox("过录制", &::permeate_record)) {
+            ::permeate_record_ini = true;
+        }
+        if (ImGui::Button("初始化绘制", ImVec2(ImGui::GetContentRegionAvail().x, 50))) {
+            DrawInit();
+        }
+        ImGui::ItemSize(ImVec2(0, 5));
+        ImGui::Checkbox("显示方框", &DrawIo[1]);
+        ImGui::SameLine(0, 40);
+        ImGui::Checkbox("显示距离", &DrawIo[2]);
+        ImGui::SameLine(0, 40);
+        ImGui::Checkbox("显示射线", &DrawIo[3]);
+        ImGui::Checkbox("显示骨骼", &DrawIo[4]);
+        ImGui::SameLine(0, 40);
+        ImGui::Checkbox("显示信息", &DrawIo[5]);
+        ImGui::SameLine(0, 40);
+        ImGui::Checkbox("显示血量", &DrawIo[6]);
+        ImGui::Checkbox("敌人地址", &DrawIo[7]);
+        ImGui::SameLine(0, 40);
+        ImGui::Checkbox("忽略人机", &忽略人机);
+        ImGui::SliderFloat("刷新帧率调节", &FPS, 60.0f, 144.0f, "%.2f", 3);
+        ImGui::BulletText("进程:%d", pid);
+        ImGui::BulletText("矩阵:%lx", Matrix);
+        ImGui::BulletText("自身结构:%lx", MySelf);
+        ImGui::BulletText("世界:%lx", Arrayaddr);
+        ImGui::BulletText("数量:%d", Count);
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 1.0f, 1.0f), "应用平均 %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+        g_window = ImGui::GetCurrentWindow();
+        ImGui::End();
+    }
+}
