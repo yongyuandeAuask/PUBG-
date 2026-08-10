@@ -4,9 +4,9 @@
 #define NANOVG_GLES3_IMPLEMENTATION
 #include "nanovg_gl.h"
 
-// 嵌入字体（编译时由 fonts/ 自动生成，【只能在本文件包含一次】）
-//#include "My_font/AgencyFB_Bold.h"
-//#include "My_font/MaterialIcons_Regular.h"
+// --- 关键修复：正确包含字体头文件 ---
+#include "include/My_font/AgencyFB_Bold.h"  // ✅ 正确路径
+// #include "My_font/MaterialIcons_Regular.h"  // ❌ 注释掉（不需要）
 
 NVGcontext* vg = nullptr;
 int g_nvg_font    = -1;   // 系统中文字体（中文/兜底）
@@ -38,9 +38,9 @@ int main(int argc, char *argv[]) {
     // 初始化 NanoVG
     vg = nvgCreateGLES3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
     
-    // 两个自定义字体 —— 从嵌入内存加载，不依赖手机文件
+    // --- 修复字体加载 ---
     g_font_agency = nvgCreateFontMem(vg, "agency", AgencyFB_Bold_ttf, (int)AgencyFB_Bold_ttf_len, 0);
-    g_font_icons  = nvgCreateFontMem(vg, "icons",  MaterialIcons_Regular_otf, (int)MaterialIcons_Regular_otf_len, 0);
+    // g_font_icons = nvgCreateFontMem(vg, "icons", MaterialIcons_Regular_otf, (int)MaterialIcons_Regular_otf_len, 0);
     
     // 中文字体走系统（中文太大不嵌入）
     g_nvg_font = nvgCreateFont(vg, "zh", "/system/fonts/NotoSansCJK-Regular.ttc");
@@ -61,10 +61,7 @@ int main(int argc, char *argv[]) {
         drawBegin();
         graphics->NewFrame();
         Layout_tick_UI(&flag);
-        
-        // --- 使用新的 NanoVG 绘制函数 ---
         DrawPlayerNVG(vg);
-        
         FPS限制.SetFps(FPS);
         FPS限制.AotuFPS();
         graphics->EndFrame(); 
