@@ -1,12 +1,18 @@
 // 【关键】Android 环境下必须用 GLES3 宏，且必须先包含 gl3.h
+// 【关键】先包含 gl3.h
 #include <GLES3/gl3.h>
-#define NANOVG_GLES3_IMPLEMENTATION
-#include "nanovg_gl.h"
+
+// 【修复】先包含 nanovg.h，让编译器认识 NVGcontext 类型
 #include "nanovg.h"
 
-// 定义 NanoVG 全局上下文
+// 然后定义宏，再包含 GLES3 后端实现
+#define NANOVG_GLES3_IMPLEMENTATION
+#include "nanovg_gl.h"
+
 NVGcontext* vg = nullptr;
-int g_nvg_font = -1; // 字体 ID
+int g_nvg_font = -1;
+
+// ... 后面的代码全部保持不变 ...
 
 #include "draw.h"    
 #include "timer.h"
