@@ -3,7 +3,7 @@ name: Build Android Executable
 on:
   push:
     branches: [ "master" ]
-  workflow_dispatch: # 允许在网页上手动点击 "Run workflow"
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,14 +25,14 @@ jobs:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
       run: |
         echo "NDK Path: $ANDROID_NDK_HOME"
-        echo "Checking prebuilt libs..."
         ls -l libs/arm64-v8a/
         
-        # 执行核心编译命令
-        $ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk
+        # 【关键修改】加了 NDK_LIBS_OUT=./build_out
+        # 让 ndk-build 把成品输出到 build_out，不再清空你的 libs/ 目录！
+        $ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk NDK_LIBS_OUT=./build_out
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: compiled-hack
-        path: libs/
+        path: build_out/
