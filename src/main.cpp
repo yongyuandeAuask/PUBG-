@@ -6,12 +6,12 @@
 
 // 嵌入字体（编译时由 fonts/ 自动生成，【只能在本文件包含一次】）
 #include "My_font/AgencyFB_Bold.h"
-#include "My_font/MaterialIcons_Regular.h"
+// #include "My_font/MaterialIcons_Regular.h" // 如果没传这个文件就注释掉
 
 NVGcontext* vg = nullptr;
 int g_nvg_font    = -1;   // 系统中文字体（中文/兜底）
-int g_font_agency = -1;   // AgencyFB-Bold（顶部 asuka）
-int g_font_icons  = -1;   // MaterialIcons（名字/距离）
+int g_font_agency = -1;   // AgencyFB-Bold（顶部 asuka + 距离）
+int g_font_icons  = -1;   // MaterialIcons（备用）
 
 #include "draw.h"    
 #include "timer.h"
@@ -35,11 +35,11 @@ int main(int argc, char *argv[]) {
     // 初始化 NanoVG
     vg = nvgCreateGLES3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
     
-    // 两个自定义字体 —— 从嵌入内存加载，不依赖手机文件
+    // 从嵌入内存加载 AgencyFB-Bold
     g_font_agency = nvgCreateFontMem(vg, "agency", AgencyFB_Bold_ttf, (int)AgencyFB_Bold_ttf_len, 0);
-    g_font_icons  = nvgCreateFontMem(vg, "icons",  MaterialIcons_Regular_otf, (int)MaterialIcons_Regular_otf_len, 0);
+    // g_font_icons = nvgCreateFontMem(vg, "icons", MaterialIcons_Regular_otf, (int)MaterialIcons_Regular_otf_len, 0);
     
-    // 中文字体走系统（中文太大不嵌入）
+    // 中文字体走系统
     g_nvg_font = nvgCreateFont(vg, "zh", "/system/fonts/NotoSansCJK-Regular.ttc");
     if (g_nvg_font == -1) g_nvg_font = nvgCreateFont(vg, "zh", "/system/fonts/Roboto-Regular.ttf");
     if (g_nvg_font == -1) g_nvg_font = nvgCreateFont(vg, "zh", "/system/fonts/DroidSans.ttf");
