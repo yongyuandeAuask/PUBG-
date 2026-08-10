@@ -5,7 +5,7 @@
 #include "nanovg_gl.h"
 
 // --- 关键修复：正确包含字体头文件 ---
-#include "include/My_font/AgencyFB_Bold.h"  // ✅ 正确路径
+#include "My_font/AgencyFB_Bold.h"  // ✅ 正确路径
 // #include "My_font/MaterialIcons_Regular.h"  // ❌ 注释掉（不需要）
 
 NVGcontext* vg = nullptr;
