@@ -4,9 +4,8 @@
 #define NANOVG_GLES3_IMPLEMENTATION
 #include "nanovg_gl.h"
 
-// --- 关键修复：正确包含字体头文件 ---
-#include "My_font/AgencyFB_Bold.h"  // ✅ 正确路径
-// #include "My_font/MaterialIcons_Regular.h"  // ❌ 注释掉（不需要）
+// --- 关键：正确包含字体头文件 ---
+#include "include/My_font/AgencyFB-Bold.h"  // ✅ 正确路径
 
 NVGcontext* vg = nullptr;
 int g_nvg_font    = -1;   // 系统中文字体（中文/兜底）
