@@ -26,17 +26,11 @@ jobs:
       run: |
         echo "NDK Path: $ANDROID_NDK_HOME"
         ls -l libs/arm64-v8a/
-
-        # ===== 字体嵌入：ttf/otf 转成 C 数组头文件 =====
-        which xxd || sudo apt-get install -y xxd
-        mkdir -p include/My_font
-        (cd fonts && xxd -i AgencyFB-Bold.ttf > ../include/My_font/AgencyFB_Bold.h)
-        # 如果你没有 MaterialIcons，下面这行可以注释掉
-        # (cd fonts && xxd -i MaterialIcons-Regular.otf > ../include/My_font/MaterialIcons_Regular.h)
-
-        # NDK_LIBS_OUT 换目录，防止 ndk-build 清空 libs/ 里的 libparadise_api.a
+        
+        # 【关键修改】加了 NDK_LIBS_OUT=./build_out
+        # 让 ndk-build 把成品输出到 build_out，不再清空你的 libs/ 目录！
         $ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=./Android.mk NDK_APPLICATION_MK=./Application.mk NDK_LIBS_OUT=./build_out
-
+        
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
