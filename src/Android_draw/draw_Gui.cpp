@@ -1,62 +1,73 @@
 #include "draw.h"
 #include "读写.h"
 #include "UeTool.h"
-#include "绘图.h"
 #include "nanovg.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <algorithm>
 
+// 补回丢失的变量
+static long 类地址 = 0;
+static bool 忽略人机 = false;
+
 extern NVGcontext* vg;
-extern int g_nvg_font;      // 系统中文字体
-extern int g_font_agency;   // AgencyFB-Bold
-extern int g_font_icons;    // MaterialIcons（纯图标字体，只能画图标码点！）
+extern int g_nvg_font;
+extern int g_font_agency;
+extern int g_font_icons;
 extern void (*g_nanovg_render_callback)();
 
-// 距离用字体：默认 AgencyFB（有数字）。
-// 想画图标才用 g_font_icons；中文名字一律用 g_nvg_font。
-#define FONT_ESP g_font_agency
+// 距离用 AgencyFB（数字帅），名字用系统中文字体
+#define FONT_DIST g_font_agency
+#define FONT_NAME g_nvg_font
 
-// ==================== 描边文本（白+黑混色风格）====================
-static void NG_OutlinedText(const char* text, float x, float y, NVGcolor c,
-                            float size, int fontId, unsigned char outlineAlpha = 160) {
+// ==================== 描边文本（复刻 .cpp 的黄字黑边）====================
+static void NG_OutlinedText(const char* text, float x, float y, NVGcolor c, float size, int fontId, unsigned char outlineAlpha = 160) {
     nvgFontSize(vg, size);
     nvgFontFaceId(vg, fontId);
     nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-    // 外圈软黑
     nvgFillColor(vg, nvgRGBA(0, 0, 0, outlineAlpha / 2));
-    for (int ox = -2; ox <= 2; ox++)
-        for (int oy = -2; oy <= 2; oy++) {
-            if (abs(ox) + abs(oy) < 3) continue;
-            nvgText(vg, x + ox, y + oy, text, NULL);
-        }
-    // 内圈黑
+    for (int ox = -2; ox <= 2; ox++) for (int oy = -2; oy <= 2; oy++) { if (abs(ox)+abs(oy)<3) continue; nvgText(vg, x+ox, y+oy, text, NULL); }
     nvgFillColor(vg, nvgRGBA(0, 0, 0, outlineAlpha));
-    for (int ox = -1; ox <= 1; ox++)
-        for (int oy = -1; oy <= 1; oy++) {
-            if (!ox && !oy) continue;
-            nvgText(vg, x + ox, y + oy, text, NULL);
-        }
-    // 主体
+    for (int ox = -1; ox <= 1; ox++) for (int oy = -1; oy <= 1; oy++) { if (!ox&&!oy) continue; nvgText(vg, x+ox, y+oy, text, NULL); }
     nvgFillColor(vg, c);
     nvgText(vg, x, y, text, NULL);
+}
+
+// ==================== 初始化与数据更新 ====================
+void DrawInit() {
+    if (初始化) return;
+    pid = getPID("com.rekoo.pubgm"); 
+    if (pid <= 0) return;
+    libbase = getModuleBase("libUE4.so");
+    if (libbase <= 0) return;
+    初始化 = true;
+}
+
+void UpdateGameData() {
+    if (!初始化) return;
+    Matrix = driver->read<uint64_t>(driver->read<uint64_t>(libbase + 0xf1d5f70) + 0xC0) + 0x590;
+    Uworld = driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(libbase + 0xf1fb900) + 0x810) + 0x78);
+    Uleve = driver->read<uint64_t>(Uworld + 0x30);
+    Arrayaddr = driver->read<uint64_t>(Uleve + 0xA0);
+    Count = driver->read<int>(Uleve + 0xA8);
+    MySelf = driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(libbase + 0xf1fb900) + 0x810) + 0x78) + 0x38) + 0x78) + 0x30) + 0x28c8);
+    类地址 = driver->read<uint64_t>(driver->read<uint64_t>(libbase + 0xec73720) + 0x110);
+    memset(matrix, 0, 16);
+    driver->read((uintptr_t)Matrix, matrix, 16 * 4);
 }
 
 // ==================== Canvas ESP 绘制 ====================
 static void DrawESP_NanoVG() {
     if (!vg || !初始化 || MySelf == 0) return;
 
-    // ========== 顶部 asuka（AgencyFB，白+黑混色）==========
-    NG_OutlinedText("asuka", ::native_window_screen_x / 2.0f, 40.0f,
-                    nvgRGBA(255, 255, 255, 255), 30.0f,
-                    (g_font_agency != -1) ? g_font_agency : g_nvg_font);
+    // ========== 1. 顶部中央白色 asuka（AgencyFB-Bold）==========
+    NG_OutlinedText("asuka", ::native_window_screen_x / 2.0f, 40.0f, nvgRGBA(255, 255, 255, 255), 30.0f, (g_font_agency != -1) ? g_font_agency : g_nvg_font);
 
     int 自己队伍 = driver->read<int>(MySelf + 0x998);
     Vector3A Z;
     driver->read((uintptr_t)(driver->read<uint64_t>(MySelf + 0x208) + 0x1c8), &Z, sizeof(Z));
     PlayerCount = 0;
-    int totalEnemies = 0, totalBots = 0;
 
     for (int i = 0; i < Count; i++) {
         long int Objaddr = driver->read<uint64_t>(Arrayaddr + 0x8 * i);
@@ -65,8 +76,7 @@ static void DrawESP_NanoVG() {
         if (driver->read<float>(Objaddr + 0x2b78) != 479.5f) continue;
 
         int ClassID = driver->read<int>(Objaddr + 24);
-        long FNameEntry = driver->read<uint64_t>(
-            driver->read<uint64_t>(类地址 + (ClassID / 0x4000) * 0x8) + (ClassID % 0x4000) * 0x8);
+        long FNameEntry = driver->read<uint64_t>(driver->read<uint64_t>(类地址 + (ClassID / 0x4000) * 0x8) + (ClassID % 0x4000) * 0x8);
         char ClassName[64] = "";
         driver->read((uintptr_t)(FNameEntry + 0xC), ClassName, 64);
         if (strstr(ClassName, "BPPawn_Escape_Raven") != 0 || strstr(ClassName, "BPPawn_Escape_UAV_C") != 0) continue;
@@ -86,7 +96,6 @@ static void DrawESP_NanoVG() {
         if (最大血量 <= 0) continue;
 
         PlayerCount++;
-        if (是人机) totalBots++; else totalEnemies++;
 
         Vector3A D;
         driver->read((uintptr_t)(driver->read<uint64_t>(Objaddr + 0x208) + 0x1c8), &D, sizeof(D));
@@ -107,137 +116,77 @@ static void DrawESP_NanoVG() {
         float BOTTOM = Y + W;
         float TOP = Y - W;
 
-        // ==================== 骨骼读取 ====================
-        Vector2A Head, Chest, Pelvis, Left_Shoulder, Right_Shoulder,
-                 Left_Elbow, Right_Elbow, Left_Wrist, Right_Wrist,
-                 Left_Thigh, Right_Thigh, Left_Knee, Right_Knee,
-                 Left_Ankle, Right_Ankle;
-
+        Vector2A Head, Chest, Pelvis, Left_Shoulder, Right_Shoulder, Left_Elbow, Right_Elbow, Left_Wrist, Right_Wrist, Left_Thigh, Right_Thigh, Left_Knee, Right_Knee, Left_Ankle, Right_Ankle;
         if (DrawIo[4]) {
             long int Mesh = driver->read<uint64_t>(Objaddr + 0x510);
             long int human = Mesh + 0x210;
             long int Bone = driver->read<uint64_t>(Mesh + 0x9a8) + 0x30;
             FMatrix c2wMatrix = TransformToMatrix(getBone(human));
-            #define READ_BONE(var, idx) \
-                var = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(getBone(Bone + idx * 48)), c2wMatrix)), matrix, camera)
-            READ_BONE(Head, 9);  READ_BONE(Chest, 5);  READ_BONE(Pelvis, 2);
-            READ_BONE(Left_Shoulder, 21);  READ_BONE(Right_Shoulder, 44);
-            READ_BONE(Left_Elbow, 22);     READ_BONE(Right_Elbow, 45);
-            READ_BONE(Left_Wrist, 23);     READ_BONE(Right_Wrist, 46);
-            READ_BONE(Left_Thigh, 68);     READ_BONE(Right_Thigh, 72);
-            READ_BONE(Left_Knee, 69);      READ_BONE(Right_Knee, 73);
-            READ_BONE(Left_Ankle, 70);     READ_BONE(Right_Ankle, 74);
+            #define READ_BONE(var, idx) var = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(getBone(Bone + idx * 48)), c2wMatrix)), matrix, camera)
+            READ_BONE(Head, 9); READ_BONE(Chest, 5); READ_BONE(Pelvis, 2);
+            READ_BONE(Left_Shoulder, 21); READ_BONE(Right_Shoulder, 44);
+            READ_BONE(Left_Elbow, 22); READ_BONE(Right_Elbow, 45);
+            READ_BONE(Left_Wrist, 23); READ_BONE(Right_Wrist, 46);
+            READ_BONE(Left_Thigh, 68); READ_BONE(Right_Thigh, 72);
+            READ_BONE(Left_Knee, 69); READ_BONE(Right_Knee, 73);
+            READ_BONE(Left_Ankle, 70); READ_BONE(Right_Ankle, 74);
             #undef READ_BONE
         }
 
-        float bottom;
-        if (DrawIo[4]) {
-            bottom = (Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10;
-        } else {
-            bottom = BOTTOM;
-        }
+        float bottom = DrawIo[4] ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10) : BOTTOM;
 
-        // ==================== 方框 ====================
+        // ========== 2. 方框 ==========
         if (DrawIo[1]) {
-            nvgBeginPath(vg);
-            nvgRect(vg, X - 1, TOP - 1, W + 2, (bottom - TOP) + 2);
-            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 60));
-            nvgStrokeWidth(vg, 4.0f);
-            nvgStroke(vg);
-            nvgBeginPath(vg);
-            nvgRect(vg, X, TOP, W, bottom - TOP);
-            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255));
-            nvgStrokeWidth(vg, 1.5f);
-            nvgStroke(vg);
+            nvgBeginPath(vg); nvgRect(vg, X - 1, TOP - 1, W + 2, (bottom - TOP) + 2); nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 60)); nvgStrokeWidth(vg, 4.0f); nvgStroke(vg);
+            nvgBeginPath(vg); nvgRect(vg, X, TOP, W, bottom - TOP); nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255)); nvgStrokeWidth(vg, 1.5f); nvgStroke(vg);
         }
 
-        // ==================== 射线 ====================
+        // ========== 3. 射线 ==========
         if (DrawIo[3]) {
-            nvgBeginPath(vg);
-            nvgMoveTo(vg, px, 130);
-            nvgLineTo(vg, r_x, TOP);
-            nvgStrokeColor(vg, nvgRGBA(255, 0, 0, 255));
-            nvgStrokeWidth(vg, 1.0f);
-            nvgStroke(vg);
+            nvgBeginPath(vg); nvgMoveTo(vg, px, 130); nvgLineTo(vg, r_x, TOP); nvgStrokeColor(vg, nvgRGBA(255, 0, 0, 255)); nvgStrokeWidth(vg, 1.0f); nvgStroke(vg);
         }
 
-        // ==================== 骨骼（0.8 细白线）====================
+        // ========== 4. 骨骼（0.8 细白线，复刻 .cpp 风格）==========
         if (DrawIo[4]) {
-            auto bone = [](Vector2A a, Vector2A b) {
-                nvgBeginPath(vg);
-                nvgMoveTo(vg, a.X, a.Y); nvgLineTo(vg, b.X, b.Y);
-                nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255));
-                nvgStrokeWidth(vg, 0.8f);
-                nvgStroke(vg);
-            };
-            bone(Head, Chest);  bone(Chest, Pelvis);
-            bone(Chest, Left_Shoulder);  bone(Left_Shoulder, Left_Elbow);  bone(Left_Elbow, Left_Wrist);
+            auto bone = [](Vector2A a, Vector2A b) { nvgBeginPath(vg); nvgMoveTo(vg, a.X, a.Y); nvgLineTo(vg, b.X, b.Y); nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255)); nvgStrokeWidth(vg, 0.8f); nvgStroke(vg); };
+            bone(Head, Chest); bone(Chest, Pelvis);
+            bone(Chest, Left_Shoulder); bone(Left_Shoulder, Left_Elbow); bone(Left_Elbow, Left_Wrist);
             bone(Chest, Right_Shoulder); bone(Right_Shoulder, Right_Elbow); bone(Right_Elbow, Right_Wrist);
-            bone(Pelvis, Left_Thigh);  bone(Left_Thigh, Left_Knee);  bone(Left_Knee, Left_Ankle);
+            bone(Pelvis, Left_Thigh); bone(Left_Thigh, Left_Knee); bone(Left_Knee, Left_Ankle);
             bone(Pelvis, Right_Thigh); bone(Right_Thigh, Right_Knee); bone(Right_Knee, Right_Ankle);
         }
 
-        // ==================== 血条（头顶，红填充+黑框+分段线）====================
+        // ========== 5. 血条（复刻 .cpp 的红填充+黑框+分段线）==========
         if (DrawIo[6]) {
             float CurHP = 当前血量 > 0 ? 当前血量 : 0;
             float mWidthScale = std::min(0.1f * Distance, 35.0f);
-            float mWidth  = 80.0f - mWidthScale;
-            float mHeight = mWidth * 0.07f;
-            float bx = MIDDLE - mWidth / 2.0f;
-            float by = TOP - 14.0f;   // 固定贴在头顶，避免和名字打架
-
-            nvgBeginPath(vg);
-            nvgRect(vg, bx, by, mWidth * (CurHP / 最大血量), mHeight);
-            nvgFillColor(vg, nvgRGBA(255, 0, 0, 255));
-            nvgFill(vg);
-
-            nvgBeginPath(vg);
-            nvgRect(vg, bx, by, mWidth, mHeight);
-            nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
-            nvgStrokeWidth(vg, 1.3f);
-            nvgStroke(vg);
-
-            for (int k = 16; k < mWidth; k += 16) {
-                nvgBeginPath(vg);
-                nvgMoveTo(vg, bx + k, by); nvgLineTo(vg, bx + k, by + mHeight);
-                nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
-                nvgStrokeWidth(vg, 1.3f);
-                nvgStroke(vg);
-            }
+            float mWidth = 80.0f - mWidthScale, mHeight = mWidth * 0.07f;
+            float bx = MIDDLE - mWidth / 2.0f, by = TOP - 14.0f;
+            
+            // 红填充
+            nvgBeginPath(vg); nvgRect(vg, bx, by, mWidth * (CurHP / 最大血量), mHeight); nvgFillColor(vg, nvgRGBA(255, 0, 0, 255)); nvgFill(vg);
+            // 黑外框
+            nvgBeginPath(vg); nvgRect(vg, bx, by, mWidth, mHeight); nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255)); nvgStrokeWidth(vg, 1.3f); nvgStroke(vg);
+            // 分段黑线 (16, 32, 48, 64)
+            for (int k = 16; k < mWidth; k += 16) { nvgBeginPath(vg); nvgMoveTo(vg, bx + k, by); nvgLineTo(vg, bx + k, by + mHeight); nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255)); nvgStrokeWidth(vg, 1.3f); nvgStroke(vg); }
         }
 
-        // ==================== 名字（中文用系统字体，黄色描边）====================
+        // ========== 6. 名字（中文用系统字体，黄字黑边）==========
         if (DrawIo[5]) {
             char nameBuf[96];
-            if (是人机) {
-                snprintf(nameBuf, sizeof(nameBuf), "%d 人机", 敌人队伍);
-            } else {
-                getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960));
-                snprintf(nameBuf, sizeof(nameBuf), "%d %s", 敌人队伍, PlayerName);
-            }
-            NG_OutlinedText(nameBuf, MIDDLE, TOP - 32, nvgRGBA(255, 255, 0, 255),
-                            (float)std::max(5, 12 - (int)(Distance / 40)) * 1.6f, g_nvg_font);
+            if (是人机) snprintf(nameBuf, sizeof(nameBuf), "%d 人机", 敌人队伍);
+            else { getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960)); snprintf(nameBuf, sizeof(nameBuf), "%d %s", 敌人队伍, PlayerName); }
+            NG_OutlinedText(nameBuf, MIDDLE, TOP - 32, nvgRGBA(255, 255, 0, 255), (float)std::max(5, 12 - (int)(Distance / 40)) * 1.6f, FONT_NAME);
         }
 
-        // ==================== 距离（脚下，黄色描边）====================
+        // ========== 7. 距离（AgencyFB 字体，黄字黑边）==========
         if (DrawIo[2]) {
-            char distBuf[32];
-            snprintf(distBuf, sizeof(distBuf), "%d M", (int)Distance);
-            NG_OutlinedText(distBuf, MIDDLE, BOTTOM + 14, nvgRGBA(255, 255, 0, 255),
-                            (float)std::max(3, 8 - (int)(Distance / 100)) * 2.0f, FONT_ESP);
+            char distBuf[32]; snprintf(distBuf, sizeof(distBuf), "%d M", (int)Distance);
+            NG_OutlinedText(distBuf, MIDDLE, BOTTOM + 14, nvgRGBA(255, 255, 0, 255), (float)std::max(3, 8 - (int)(Distance / 100)) * 2.0f, FONT_DIST);
         }
-    }
-
-    // ========== 顶部人数统计 ==========
-    if (totalEnemies > 0 || totalBots > 0) {
-        char cntBuf[64];
-        snprintf(cntBuf, sizeof(cntBuf), "真人: %d  人机: %d", totalEnemies, totalBots);
-        NG_OutlinedText(cntBuf, ::native_window_screen_x / 2.0f, 90.0f,
-                        nvgRGBA(255, 255, 255, 255), 22.0f, g_nvg_font);
     }
 }
 
-// ==================== 帧回调 ====================
 static void NanoVG_Frame_Callback() {
     if (!vg) return;
     nvgBeginFrame(vg, ::native_window_screen_x, ::native_window_screen_y, 1.0f);
@@ -245,68 +194,9 @@ static void NanoVG_Frame_Callback() {
     nvgEndFrame(vg);
 }
 
-// ==================== 原 DrawPlayer 清空（ESP 已由 NanoVG 接管）====================
-void DrawPlayer(ImDrawList* draw) {
-}
+void DrawPlayer(ImDrawList* draw) {} // 废弃旧 ImGui 绘制
 
 // ==================== ImGui 菜单（原样保留）====================
 void Layout_tick_UI(bool* main_thread_flag) {
-    // 首帧注册 NanoVG 回调
     static bool nvg_registered = false;
-    if (!nvg_registered) {
-        g_nanovg_render_callback = NanoVG_Frame_Callback;
-        nvg_registered = true;
-    }
-
-    UpdateGameData();
-    static bool show_another_window = false;
-    {
-        static float f = 0.0f;
-        static int counter = 0;
-        static int style_idx = 0;
-        static ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-        ImGui::Begin("ImGui-UE4", main_thread_flag);
-        if (::permeate_record_ini) {
-            ImGui::SetWindowPos({ LastCoordinate.Pos_x, LastCoordinate.Pos_y });
-            ImGui::SetWindowSize({ LastCoordinate.Size_x, LastCoordinate.Size_y });
-            permeate_record_ini = false;
-        }
-        ImGui::Text("渲染模式 : %s, gui版本 : %s", graphics->RenderName, IMGUI_VERSION);
-        if (ImGui::Combo("##主题", &style_idx, "白色主题\0蓝色主题\0紫色主题\0")) {
-            switch (style_idx) {
-                case 0: ImGui::StyleColorsLight(); break;
-                case 1: ImGui::StyleColorsDark(); break;
-                case 2: ImGui::StyleColorsClassic(); break;
-            }
-        }
-        if (ImGui::Checkbox("过录制", &::permeate_record)) {
-            ::permeate_record_ini = true;
-        }
-        if (ImGui::Button("初始化绘制", ImVec2(ImGui::GetContentRegionAvail().x, 50))) {
-            DrawInit();
-        }
-        ImGui::ItemSize(ImVec2(0, 5));
-        ImGui::Checkbox("显示方框", &DrawIo[1]);
-        ImGui::SameLine(0, 40);
-        ImGui::Checkbox("显示距离", &DrawIo[2]);
-        ImGui::SameLine(0, 40);
-        ImGui::Checkbox("显示射线", &DrawIo[3]);
-        ImGui::Checkbox("显示骨骼", &DrawIo[4]);
-        ImGui::SameLine(0, 40);
-        ImGui::Checkbox("显示信息", &DrawIo[5]);
-        ImGui::SameLine(0, 40);
-        ImGui::Checkbox("显示血量", &DrawIo[6]);
-        ImGui::Checkbox("敌人地址", &DrawIo[7]);
-        ImGui::SameLine(0, 40);
-        ImGui::Checkbox("忽略人机", &忽略人机);
-        ImGui::SliderFloat("刷新帧率调节", &FPS, 60.0f, 144.0f, "%.2f", 3);
-        ImGui::BulletText("进程:%d", pid);
-        ImGui::BulletText("矩阵:%lx", Matrix);
-        ImGui::BulletText("自身结构:%lx", MySelf);
-        ImGui::BulletText("世界:%lx", Arrayaddr);
-        ImGui::BulletText("数量:%d", Count);
-        ImGui::TextColored(ImVec4(1.0f, 0.0f, 1.0f, 1.0f), "应用平均 %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-        g_window = ImGui::GetCurrentWindow();
-        ImGui::End();
-    }
-}
+    if (!nvg_registered) { g_nanovg_re
