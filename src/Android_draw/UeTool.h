@@ -138,6 +138,7 @@ struct FTransform
 {
 	Quat Rotation;
 	Vector3A Translation;
+    float chunk;
 	Vector3A Scale3D;
 };
 
