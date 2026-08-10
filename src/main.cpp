@@ -5,7 +5,7 @@
 #include "nanovg_gl.h"
 
 // --- 关键：正确包含字体头文件 ---
-#include "include/My_font/AgencyFB-Bold.h"  // ✅ 正确路径
+#include "My_font/AgencyFB-Bold.h"  // ✅ 正确路径
 
 NVGcontext* vg = nullptr;
 int g_nvg_font    = -1;   // 系统中文字体（中文/兜底）
