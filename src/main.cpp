@@ -5,8 +5,8 @@
 #include "nanovg_gl.h"
 
 // 嵌入字体（编译时由 fonts/ 自动生成，【只能在本文件包含一次】）
-#include "include/My_font/AgencyFB_Bold.h"
-#include "include/My_font/MaterialIcons_Regular.h"
+#include "My_font/AgencyFB_Bold.h"
+#include "My_font/MaterialIcons_Regular.h"
 
 NVGcontext* vg = nullptr;
 int g_nvg_font    = -1;   // 系统中文字体（中文/兜底）
