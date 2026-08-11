@@ -9,7 +9,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cmath>
-#include <algorithm> // 用于 std::min / std::max
+#include <algorithm>
 
 extern NVGcontext* vg;
 extern int g_nvg_font;
@@ -17,6 +17,9 @@ extern int g_font_agency;
 
 static long 类地址 = 0;
 static bool 忽略人机 = false;
+static int g_bone_set = 0;      // 骨骼索引切换：0原版 1绘制默认 2绘制真人 3夜冷68
+static int RealCount = 0;
+static int BotCount = 0;
 
 void DrawInit() {
     if (初始化) return;
@@ -59,7 +62,7 @@ void UpdateGameData() {
     driver->read((uintptr_t)Matrix, matrix, 16 * 4);
 }
 
-// ==================== NanoVG 版 DrawOutlinedText ====================
+// ==================== NanoVG 版 DrawOutlinedText（K2_DrawText 描边版）====================
 void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
                          Vector2A pos, float fontSize,
                          NVGcolor color, NVGcolor outlineColor,
@@ -87,7 +90,20 @@ void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
     nvgText(vg, pos.X, pos.Y, text, NULL);
 }
 
-// ==================== 绘制玩家（NanoVG 版 + 绘制.h 索引）====================
+// ==================== NanoVG 版 绘制文本（1:1 复刻 K2_DrawText 无描边版）====================
+// 对应: Canvas->K2_DrawText(tslFont, Text, Pos, Color, 1.f, {}, {}, isCenter, isCenter, false, {});
+void 绘制文本NVG(NVGcontext* vg, int fontId, const char* text,
+               Vector2A pos, float fontSize, NVGcolor color, bool isCenter = false)
+{
+    if (!vg || !text || fontId < 0) return;
+    nvgFontSize(vg, fontSize);
+    nvgFontFaceId(vg, fontId);
+    nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_MIDDLE);
+    nvgFillColor(vg, color);
+    nvgText(vg, pos.X, pos.Y, text, NULL);
+}
+
+// ==================== 绘制玩家 ====================
 void DrawPlayerNVG(NVGcontext* vg) {
     if (!初始化 || MySelf == 0 || vg == nullptr) return;
 
@@ -101,6 +117,9 @@ void DrawPlayerNVG(NVGcontext* vg) {
     driver->read((uintptr_t)(driver->read<uint64_t>(MySelf + 0x208) + 0x1c8), &Z, sizeof(Z));
 
     PlayerCount = 0;
+    RealCount = 0;
+    BotCount = 0;
+
     for (int i = 0; i < Count; i++) {
         long int Objaddr = driver->read<uint64_t>(Arrayaddr + 0x8 * i);
         if (Objaddr <= 0xffff || Objaddr == 0 || Objaddr <= 0x10000000 || Objaddr % 4 != 0 || Objaddr >= 0x10000000000) continue;
@@ -124,16 +143,18 @@ void DrawPlayerNVG(NVGcontext* vg) {
         int 敌人队伍 = driver->read<int>(Objaddr + 0x998);
         if (敌人队伍 == 自己队伍) continue;
 
-        if (忽略人机) {
-            int botFlag = driver->read<int>(Objaddr + 0xa59);
-            if (敌人队伍 && (botFlag == 16842753 || botFlag == 16843009 || botFlag == 16843008)) continue;
-        }
+        int botFlag = driver->read<int>(Objaddr + 0xa59);
+        bool isBot = isDog || isHunger ||
+                     (敌人队伍 != 0 && (botFlag == 16842753 || botFlag == 16843009 || botFlag == 16843008));
+        if (忽略人机 && isBot) continue;
 
         float 当前血量 = driver->read<float>(Objaddr + 0xe60);
         float 最大血量 = driver->read<float>(Objaddr + 0xe64);
         if (最大血量 <= 0) continue;
 
         PlayerCount++;
+        if (isBot) BotCount++; else RealCount++;
+
         Vector3A D;
         driver->read((uintptr_t)(driver->read<uint64_t>(Objaddr + 0x208) + 0x1c8), &D, sizeof(D));
 
@@ -153,7 +174,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float BOTTOM = Y + W;
         float TOP = Y - W;
 
-        // ==================== 骨骼索引（完整移植自 绘制.h）====================
+        // ==================== 骨骼索引（菜单可切换）====================
         int idx_head, idx_chest, idx_pelvis, idx_lsh, idx_rsh, idx_lelb, idx_relb,
             idx_lw, idx_rw, idx_lth, idx_rth, idx_lk, idx_rk, idx_la, idx_ra;
 
@@ -169,30 +190,37 @@ void DrawPlayerNVG(NVGcontext* vg) {
             idx_lw = 13;  idx_rw = 20;
             idx_lth = 24; idx_rth = 29; idx_lk = 25; idx_rk = 30;
             idx_la = 26;  idx_ra = 31;
-        } else if (敌人队伍 < 101) {
-            idx_head = 5; idx_chest = 4; idx_pelvis = 0;
-            idx_lsh = 11; idx_rsh = 32; idx_lelb = 12; idx_relb = 33;
-            idx_lw = 63;  idx_rw = 62;
-            idx_lth = 52; idx_rth = 56; idx_lk = 53; idx_rk = 57;
-            idx_la = 54;  idx_ra = 58;
-        } else if (敌人队伍 >= 996 && 玩家标志 == 479.5f) {
-            idx_head = 5; idx_chest = 4; idx_pelvis = 0;
-            idx_lsh = 7;  idx_rsh = 13; idx_lelb = 8;  idx_relb = 14;
-            idx_lw = 9;   idx_rw = 15;
-            idx_lth = 18; idx_rth = 21; idx_lk = 19; idx_rk = 22;
-            idx_la = 20;  idx_ra = 23;
-        } else if (driver->read<float>(Objaddr + 0x0) == 200.0f) {
-            idx_head = 5; idx_chest = 3; idx_pelvis = 0;
-            idx_lsh = 7;  idx_rsh = 11; idx_lelb = 8;  idx_relb = 12;
-            idx_lw = 9;   idx_rw = 13;
-            idx_lth = 15; idx_rth = 19; idx_lk = 16; idx_rk = 20;
-            idx_la = 17;  idx_ra = 21;
         } else {
-            idx_head = 5; idx_chest = 4; idx_pelvis = 0;
-            idx_lsh = 13; idx_rsh = 34; idx_lelb = 14; idx_relb = 35;
-            idx_lw = 16;  idx_rw = 37;
-            idx_lth = 54; idx_rth = 58; idx_lk = 55; idx_rk = 59;
-            idx_la = 56;  idx_ra = 60;
+            switch (g_bone_set) {
+                case 1: // 绘制.h 默认表
+                    idx_head = 5; idx_chest = 4; idx_pelvis = 0;
+                    idx_lsh = 13; idx_rsh = 34; idx_lelb = 14; idx_relb = 35;
+                    idx_lw = 16;  idx_rw = 37;
+                    idx_lth = 54; idx_rth = 58; idx_lk = 55; idx_rk = 59;
+                    idx_la = 56;  idx_ra = 60;
+                    break;
+                case 2: // 绘制.h 真人表
+                    idx_head = 5; idx_chest = 4; idx_pelvis = 0;
+                    idx_lsh = 11; idx_rsh = 32; idx_lelb = 12; idx_relb = 33;
+                    idx_lw = 63;  idx_rw = 62;
+                    idx_lth = 52; idx_rth = 56; idx_lk = 53; idx_rk = 57;
+                    idx_la = 54;  idx_ra = 58;
+                    break;
+                case 3: // 夜冷 68 骨骼表
+                    idx_head = 5; idx_chest = 4; idx_pelvis = 0;
+                    idx_lsh = 11; idx_rsh = 33; idx_lelb = 12; idx_relb = 34;
+                    idx_lw = 13;  idx_rw = 35;
+                    idx_lth = 55; idx_rth = 59; idx_lk = 56; idx_rk = 60;
+                    idx_la = 57;  idx_ra = 61;
+                    break;
+                default: // 0 = 你的原版
+                    idx_head = 9; idx_chest = 5; idx_pelvis = 2;
+                    idx_lsh = 21; idx_rsh = 44; idx_lelb = 22; idx_relb = 45;
+                    idx_lw = 23;  idx_rw = 46;
+                    idx_lth = 68; idx_rth = 72; idx_lk = 69; idx_rk = 73;
+                    idx_la = 70;  idx_ra = 74;
+                    break;
+            }
         }
 
         Vector2A Head, Chest, Pelvis, Left_Shoulder, Right_Shoulder,
@@ -275,12 +303,12 @@ void DrawPlayerNVG(NVGcontext* vg) {
 
         float bottom = (DrawIo[4] && bonesOk) ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10) : BOTTOM;
 
-        // 距离（标在敌人脚下，居中）
+        // 距离（脚下，黄色）
         if (DrawIo[2]) {
             char distBuf[16];
             snprintf(distBuf, sizeof(distBuf), "%d M", (int)Distance);
             DrawOutlinedTextNVG(vg, g_nvg_font, distBuf, {MIDDLE, bottom + 6}, 24.0f,
-                                nvgRGBA(255, 255, 255, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
+                                nvgRGBA(255, 255, 0, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
         }
 
         // 方框
@@ -310,18 +338,15 @@ void DrawPlayerNVG(NVGcontext* vg) {
                                 nvgRGBA(239, 241, 245, 255), nvgRGBA(0, 0, 0, 255), true, 1.5f);
         }
 
-        // ==================== 骨骼 (改为白色，线宽 1.5f) ====================
+        // 骨骼（人机绿色 / 真人白色）
         if (DrawIo[4] && bonesOk) {
-            NVGcolor boneColor = nvgRGBA(255, 255, 255, 255); // 纯白色
-            
-            // 头部圆圈
+            NVGcolor boneColor = isBot ? nvgRGBA(0, 255, 0, 255) : nvgRGBA(255, 255, 255, 255);
             nvgBeginPath(vg);
             nvgCircle(vg, Head.X, Head.Y, W / 5.0f);
             nvgStrokeColor(vg, boneColor);
             nvgStrokeWidth(vg, 1.5f);
             nvgStroke(vg);
 
-            // 骨骼连线封装 (对应 K2_DrawLine)
             auto drawBoneLine = [&](float x1, float y1, float x2, float y2) {
                 nvgBeginPath(vg);
                 nvgMoveTo(vg, x1, y1);
@@ -347,14 +372,20 @@ void DrawPlayerNVG(NVGcontext* vg) {
             drawBoneLine(Right_Knee.X, Right_Knee.Y, Right_Ankle.X, Right_Ankle.Y);
         }
 
-        // 名字
+        // 信息：队伍号 + 人机/名字（头顶黄字）
         if (DrawIo[5]) {
-            getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960));
-            DrawOutlinedTextNVG(vg, g_nvg_font, PlayerName, {MIDDLE, TOP - 55}, 28.0f,
-                                nvgRGBA(248, 248, 255, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
+            char tagBuf[96];
+            if (isBot) {
+                snprintf(tagBuf, sizeof(tagBuf), "%d 人机", 敌人队伍);
+            } else {
+                getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960));
+                snprintf(tagBuf, sizeof(tagBuf), "%d %s", 敌人队伍, PlayerName);
+            }
+            DrawOutlinedTextNVG(vg, g_nvg_font, tagBuf, {MIDDLE, TOP - 52}, 24.0f,
+                                nvgRGBA(255, 255, 0, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
         }
 
-        // ==================== 血量条 (UE Canvas 风格) ====================
+        // 血量条（UE Canvas 风格，分段渐变）
         if (DrawIo[6]) {
             float CurHP = 当前血量;
             float MaxHP = 最大血量;
@@ -362,48 +393,40 @@ void DrawPlayerNVG(NVGcontext* vg) {
             if (CurHP < 0) CurHP = 0;
             if (CurHP > MaxHP) CurHP = MaxHP;
 
-            // 1. 颜色计算 (红绿渐变)
             float r = std::min(((510.f * (MaxHP - CurHP)) / MaxHP) / 255.f, 1.f);
             float g = std::min(((510.f * CurHP) / MaxHP) / 255.f, 1.f);
             float b = 0.f;
-            float a = 0.85f; 
+            float a = 0.85f;
 
-            // 2. 倒地状态判断 (血量<=0)
             bool isDowned = (CurHP <= 0.01f);
             if (isDowned) {
                 r = 0.63f; g = 0.82f; b = 0.42f; a = 0.9f;
-                CurHP = 0; // 倒地时血条清空
+                CurHP = 0;
             }
 
-            // 3. 尺寸计算 (随距离缩放)
             float mWidthScale = std::min(0.1f * Distance, 35.f);
             float mWidth = 80.f - mWidthScale;
             float mHeight = mWidth * 0.07f;
-            if (mHeight < 3.0f) mHeight = 3.0f; // 保证最小高度
+            if (mHeight < 3.0f) mHeight = 3.0f;
 
-            // 4. 位置计算 (头顶上方)
             float headX = (bonesOk && Head.X > 0) ? Head.X : MIDDLE;
             float headY = (bonesOk && Head.Y > 0) ? Head.Y : TOP;
             float barX = headX - (mWidth / 2.0f);
-            float barY = headY - (mHeight * 4.5f); 
+            float barY = headY - (mHeight * 4.5f);
 
-            // 5. 填充血量
             float fillWidth = (CurHP / MaxHP) * mWidth;
             nvgBeginPath(vg);
             nvgRect(vg, barX, barY, fillWidth, mHeight);
             nvgFillColor(vg, nvgRGBAf(r, g, b, a));
             nvgFill(vg);
 
-            // 6. 绘制黑色外框和分割线
             nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
             nvgStrokeWidth(vg, 1.5f);
 
-            // 外框
             nvgBeginPath(vg);
             nvgRect(vg, barX, barY, mWidth, mHeight);
             nvgStroke(vg);
 
-            // 内部 4 条竖线 (均匀分 5 段)
             for (int i = 1; i <= 4; i++) {
                 float lineX = barX + (mWidth / 5.0f) * i;
                 nvgBeginPath(vg);
@@ -415,45 +438,29 @@ void DrawPlayerNVG(NVGcontext* vg) {
     }
 }
 
-// ==================== NanoVG 画布帧 ====================
+// ==================== NanoVG 画布帧（Asuka追锁风格头部）====================
 void DrawCanvas() {
     if (!vg) return;
     nvgBeginFrame(vg, (float)abs_ScreenX, (float)abs_ScreenY, 1.0f);
 
     float cx = (float)abs_ScreenX * 0.5f;
 
-    // asuka：顶部中央，白字黑描边
-    Vector2A asukaPos;
-    asukaPos.X = cx;
-    asukaPos.Y = 10.0f;
-    DrawOutlinedTextNVG(vg, g_font_agency, "asuka", asukaPos, 60.0f,
-                        nvgRGBA(255, 255, 255, 255),
-                        nvgRGBA(0, 0, 0, 255),
-                        true, 3.0f);
-
-    // ESP
     DrawPlayerNVG(vg);
 
-    // 人数 / 安全：白底小框 + 蓝字，放在 asuka 下方
-    char countBuf[16];
-    snprintf(countBuf, sizeof(countBuf), "%d", PlayerCount);
-    const char* showText = (PlayerCount > 0) ? countBuf : "安全";
+    // 标题：1:1 复刻 绘制文本(Canvas, "Asuka追锁@Asuka1314", {glWidth/2, 60}, 白色, 黑色, true)
+    绘制文本NVG(vg, g_nvg_font, "Asuka追锁@Asuka1314", {cx, 60.0f}, 30.0f,
+                nvgRGBA(255, 255, 255, 255), true);
 
-    nvgBeginPath(vg);
-    nvgRect(vg, cx - 45, 82, 90, 36);
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 230));
-    nvgFill(vg);
-
-    nvgFontSize(vg, 26.0f);
-    nvgFontFaceId(vg, g_nvg_font);
-    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-    nvgFillColor(vg, (PlayerCount > 0) ? nvgRGBA(0, 73, 160, 255) : nvgRGBA(0, 150, 0, 255));
-    nvgText(vg, cx, 100, showText, NULL);
+    // 真人 / 人机 计数
+    char infoBuf[64];
+    snprintf(infoBuf, sizeof(infoBuf), "真人: %d  人机: %d", RealCount, BotCount);
+    绘制文本NVG(vg, g_nvg_font, infoBuf, {cx, 100.0f}, 26.0f,
+                nvgRGBA(255, 255, 255, 255), true);
 
     nvgEndFrame(vg);
 }
 
-// ==================== UI（ImGui 菜单，保持不变）====================
+// ==================== UI ====================
 void Layout_tick_UI(bool* main_thread_flag) {
     UpdateGameData();
     static bool show_another_window = false;
@@ -489,6 +496,10 @@ void Layout_tick_UI(bool* main_thread_flag) {
         ImGui::SameLine(0, 40);
         ImGui::Checkbox("显示射线", &DrawIo[3]);
         ImGui::Checkbox("显示骨骼", &DrawIo[4]);
+        if (DrawIo[4]) {
+            ImGui::SameLine(0, 20);
+            ImGui::Combo("##BoneSet", &g_bone_set, "原版(9,5,2)\0绘制默认(13,34)\0绘制真人(11,32)\0夜冷68\0");
+        }
         ImGui::SameLine(0, 40);
         ImGui::Checkbox("显示信息", &DrawIo[5]);
         ImGui::SameLine(0, 40);
