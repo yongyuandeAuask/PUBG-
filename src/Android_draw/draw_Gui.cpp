@@ -62,11 +62,8 @@ static void SetFontNVG(NVGcontext* vg, int fontId) {
     }
 }
 
-// ==================== 统一文字引擎（9 项修正）====================
-// 8: 统一字号换算
 static float UI_SCALE() { return (float)abs_ScreenY / 1080.0f; }
 
-// 6: 横向拉伸绘制
 static void TextDrawScaled(NVGcontext* vg, float x, float y, float sx, const char* text) {
     nvgSave(vg);
     nvgTranslate(vg, x, y);
@@ -75,7 +72,6 @@ static void TextDrawScaled(NVGcontext* vg, float x, float y, float sx, const cha
     nvgRestore(vg);
 }
 
-// 柔光文本（标题/计数/百分比）：1柔光 2紧距 3基线 6拉伸 7加粗 9模糊
 static void DrawSoftTextNVG(NVGcontext* vg, int fontId, const char* text,
                             Vector2A pos, float fontSize, NVGcolor color, bool isCenter = true)
 {
@@ -87,10 +83,17 @@ static void DrawSoftTextNVG(NVGcontext* vg, int fontId, const char* text,
     nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_MIDDLE);
     float y = pos.Y + fs * 0.06f;
 
-    nvgFontBlur(vg, 2.5f);
-    nvgFillColor(vg, nvgRGBA(0, 0, 0, 120));
+    nvgFontBlur(vg, 3.0f);
+    nvgFillColor(vg, nvgRGBA(0, 0, 0, 160));
     TextDrawScaled(vg, pos.X, y, 1.08f, text);
     nvgFontBlur(vg, 0.0f);
+
+    float o = fs * 0.05f + 1.0f;
+    nvgFillColor(vg, nvgRGBA(0, 0, 0, 255));
+    TextDrawScaled(vg, pos.X - o, y - o, 1.08f, text);
+    TextDrawScaled(vg, pos.X + o, y - o, 1.08f, text);
+    TextDrawScaled(vg, pos.X - o, y + o, 1.08f, text);
+    TextDrawScaled(vg, pos.X + o, y + o, 1.08f, text);
 
     nvgFillColor(vg, color);
     TextDrawScaled(vg, pos.X, y, 1.08f, text);
@@ -98,33 +101,25 @@ static void DrawSoftTextNVG(NVGcontext* vg, int fontId, const char* text,
     nvgTextLetterSpacing(vg, 0.0f);
 }
 
-// 粗描边文本（距离/标签/地址）：5 粗描边 + 其余同款修正
-static void DrawStrokeTextNVG(NVGcontext* vg, int fontId, const char* text,
-                              Vector2A pos, float fontSize, NVGcolor color, bool isCenter = true)
+void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
+                         Vector2A pos, float fontSize,
+                         NVGcolor color, NVGcolor outlineColor,
+                         bool isCenter = false, float outlineWidth = 1.0f)
 {
     if (!vg || !text || fontId < 0) return;
-    float fs = fontSize * UI_SCALE();
-    nvgFontSize(vg, fs);
+    nvgFontSize(vg, fontSize);
     SetFontNVG(vg, fontId);
-    nvgTextLetterSpacing(vg, -fs * 0.04f);
     nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_TOP);
-    float y = pos.Y + fs * 0.06f;
-    float o = fs * 0.06f + 0.8f;
 
-    nvgFillColor(vg, nvgRGBA(0, 0, 0, 255));
-    TextDrawScaled(vg, pos.X - o, y - o, 1.08f, text);
-    TextDrawScaled(vg, pos.X + o, y - o, 1.08f, text);
-    TextDrawScaled(vg, pos.X - o, y + o, 1.08f, text);
-    TextDrawScaled(vg, pos.X + o, y + o, 1.08f, text);
-    TextDrawScaled(vg, pos.X - o, y, 1.08f, text);
-    TextDrawScaled(vg, pos.X + o, y, 1.08f, text);
-    TextDrawScaled(vg, pos.X, y - o, 1.08f, text);
-    TextDrawScaled(vg, pos.X, y + o, 1.08f, text);
+    nvgFillColor(vg, outlineColor);
+    const float o = outlineWidth;
+    nvgText(vg, pos.X - o, pos.Y - o, text, NULL);
+    nvgText(vg, pos.X + o, pos.Y - o, text, NULL);
+    nvgText(vg, pos.X - o, pos.Y + o, text, NULL);
+    nvgText(vg, pos.X + o, pos.Y + o, text, NULL);
 
     nvgFillColor(vg, color);
-    TextDrawScaled(vg, pos.X, y, 1.08f, text);
-    TextDrawScaled(vg, pos.X + fs * 0.03f, y, 1.08f, text);
-    nvgTextLetterSpacing(vg, 0.0f);
+    nvgText(vg, pos.X, pos.Y, text, NULL);
 }
 
 static void DrawLineNVG(NVGcontext* vg, float x1, float y1, float x2, float y2,
@@ -272,69 +267,67 @@ void DrawPlayerNVG(NVGcontext* vg) {
             if (Mesh > 0x10000000 && Mesh < 0x10000000000) {
                 long int boneArrayPtr = driver->read<uint64_t>(Mesh + 0x9a8);
                 int BoneCount = driver->read<int>(Mesh + 0x9a8 + 8);
+                int maxIdx = isDog ? 20 : (isHunger ? 31 : 60);
                 if (boneArrayPtr > 0x10000000 && boneArrayPtr < 0x10000000000 &&
-                    BoneCount > 0 && BoneCount < 200) {
+                    BoneCount > maxIdx && BoneCount < 200) {
 
-                    long int human = Mesh + 0x210;
-                    long int Bone = boneArrayPtr + 0x30;
+                    // 一次读整块骨骼数组（单快照，防下蹲动画撕裂）
+                    FTransform boneBuf[61];
+                    driver->read(boneArrayPtr + 0x30, boneBuf, (maxIdx + 1) * (int)sizeof(FTransform));
 
-                    FTransform meshtrans = getBone(human);
+                    FTransform meshtrans = getBone(Mesh + 0x210);
                     FMatrix c2wMatrix = TransformToMatrix(meshtrans);
 
-                    FTransform headtrans = getBone(Bone + idx_head * 48);
-                    Vector3A HeadPos = MarixToVector(MatrixMulti(TransformToMatrix(headtrans), c2wMatrix));
-                    HeadPos.Z += 7.0f;
-                    Head = WorldToScreen(HeadPos, matrix, camera);
+                    auto BW = [&](int idx) {
+                        return MarixToVector(MatrixMulti(TransformToMatrix(boneBuf[idx]), c2wMatrix));
+                    };
 
-                    FTransform chesttrans = getBone(Bone + idx_chest * 48);
-                    Chest = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(chesttrans), c2wMatrix)), matrix, camera);
+                    Vector3A wHead = BW(idx_head); wHead.Z += 7.0f;
+                    Vector3A wChest = BW(idx_chest);
+                    Vector3A wPelvis = BW(idx_pelvis);
+                    Vector3A wLSh = BW(idx_lsh), wRSh = BW(idx_rsh);
+                    Vector3A wLElb = BW(idx_lelb), wRElb = BW(idx_relb);
+                    Vector3A wLW = BW(idx_lw), wRW = BW(idx_rw);
+                    Vector3A wLTh = BW(idx_lth), wRTh = BW(idx_rth);
+                    Vector3A wLK = BW(idx_lk), wRK = BW(idx_rk);
+                    Vector3A wLA = BW(idx_la), wRA = BW(idx_ra);
 
-                    FTransform pelvistrans = getBone(Bone + idx_pelvis * 48);
-                    Pelvis = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(pelvistrans), c2wMatrix)), matrix, camera);
+                    // 盆骨邻近校验：任何骨骼偏离盆骨超300单位=撕裂数据，丢弃
+                    auto okw = [&](const Vector3A& p) {
+                        return fabsf(p.X - wPelvis.X) < 300.0f &&
+                               fabsf(p.Y - wPelvis.Y) < 300.0f &&
+                               fabsf(p.Z - wPelvis.Z) < 300.0f;
+                    };
 
-                    FTransform lshtrans = getBone(Bone + idx_lsh * 48);
-                    Left_Shoulder = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(lshtrans), c2wMatrix)), matrix, camera);
+                    if (okw(wHead) && okw(wChest) && okw(wLSh) && okw(wRSh) &&
+                        okw(wLElb) && okw(wRElb) && okw(wLW) && okw(wRW) &&
+                        okw(wLTh) && okw(wRTh) && okw(wLK) && okw(wRK) &&
+                        okw(wLA) && okw(wRA)) {
 
-                    FTransform rshtrans = getBone(Bone + idx_rsh * 48);
-                    Right_Shoulder = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(rshtrans), c2wMatrix)), matrix, camera);
+                        Head = WorldToScreen(wHead, matrix, camera);
+                        Chest = WorldToScreen(wChest, matrix, camera);
+                        Pelvis = WorldToScreen(wPelvis, matrix, camera);
+                        Left_Shoulder = WorldToScreen(wLSh, matrix, camera);
+                        Right_Shoulder = WorldToScreen(wRSh, matrix, camera);
+                        Left_Elbow = WorldToScreen(wLElb, matrix, camera);
+                        Right_Elbow = WorldToScreen(wRElb, matrix, camera);
+                        Left_Wrist = WorldToScreen(wLW, matrix, camera);
+                        Right_Wrist = WorldToScreen(wRW, matrix, camera);
+                        Left_Thigh = WorldToScreen(wLTh, matrix, camera);
+                        Right_Thigh = WorldToScreen(wRTh, matrix, camera);
+                        Left_Knee = WorldToScreen(wLK, matrix, camera);
+                        Right_Knee = WorldToScreen(wRK, matrix, camera);
+                        Left_Ankle = WorldToScreen(wLA, matrix, camera);
+                        Right_Ankle = WorldToScreen(wRA, matrix, camera);
 
-                    FTransform lelbtrans = getBone(Bone + idx_lelb * 48);
-                    Left_Elbow = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(lelbtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform relbtrans = getBone(Bone + idx_relb * 48);
-                    Right_Elbow = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(relbtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform lwtrans = getBone(Bone + idx_lw * 48);
-                    Left_Wrist = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(lwtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform rwtrans = getBone(Bone + idx_rw * 48);
-                    Right_Wrist = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(rwtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform Llshtrans = getBone(Bone + idx_lth * 48);
-                    Left_Thigh = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Llshtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform Lrshtrans = getBone(Bone + idx_rth * 48);
-                    Right_Thigh = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Lrshtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform Llelbtrans = getBone(Bone + idx_lk * 48);
-                    Left_Knee = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Llelbtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform Lrelbtrans = getBone(Bone + idx_rk * 48);
-                    Right_Knee = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Lrelbtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform Llwtrans = getBone(Bone + idx_la * 48);
-                    Left_Ankle = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Llwtrans), c2wMatrix)), matrix, camera);
-
-                    FTransform Lrwtrans = getBone(Bone + idx_ra * 48);
-                    Right_Ankle = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Lrwtrans), c2wMatrix)), matrix, camera);
-
-                    bonesOk = onScreen(Head) && onScreen(Chest) && onScreen(Pelvis) &&
-                              onScreen(Left_Shoulder) && onScreen(Right_Shoulder) &&
-                              onScreen(Left_Elbow) && onScreen(Right_Elbow) &&
-                              onScreen(Left_Wrist) && onScreen(Right_Wrist) &&
-                              onScreen(Left_Thigh) && onScreen(Right_Thigh) &&
-                              onScreen(Left_Knee) && onScreen(Right_Knee) &&
-                              onScreen(Left_Ankle) && onScreen(Right_Ankle);
+                        bonesOk = onScreen(Head) && onScreen(Chest) && onScreen(Pelvis) &&
+                                  onScreen(Left_Shoulder) && onScreen(Right_Shoulder) &&
+                                  onScreen(Left_Elbow) && onScreen(Right_Elbow) &&
+                                  onScreen(Left_Wrist) && onScreen(Right_Wrist) &&
+                                  onScreen(Left_Thigh) && onScreen(Right_Thigh) &&
+                                  onScreen(Left_Knee) && onScreen(Right_Knee) &&
+                                  onScreen(Left_Ankle) && onScreen(Right_Ankle);
+                    }
                 }
             }
         }
@@ -345,11 +338,11 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float right = headX + W * 0.6f;
         float top   = (bonesOk && Head.Y > 0) ? (Head.Y - W / 5.0f) : TOP_FALLBACK;
         float bottom = (bonesOk) ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10.0f : Left_Ankle.Y + W / 10.0f) : BOTTOM_FALLBACK;
-        float pelvisX = (bonesOk && Pelvis.X > 0) ? Pelvis.X : headX;
-        float pelvisY = (bonesOk && Pelvis.Y > 0) ? Pelvis.Y : (top + (bottom - top) * 0.5f);
 
         NVGcolor COL_WHITE = nvgRGBA(255, 255, 255, 255);
+        NVGcolor COL_BLACK = nvgRGBA(0, 0, 0, 255);
 
+        // 方框
         if (DrawIo[1]) {
             DrawLineNVG(vg, left, top, right, top, COL_WHITE, 1.5f);
             DrawLineNVG(vg, right, top, right, bottom, COL_WHITE, 1.5f);
@@ -357,10 +350,12 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawLineNVG(vg, left, bottom, left, top, COL_WHITE, 1.5f);
         }
 
+        // 射线（连到方框顶）
         if (DrawIo[3]) {
-            DrawLineNVG(vg, (float)abs_ScreenX * 0.5f, 73.0f, headX, headY - 70.0f, COL_WHITE, 1.0f);
+            DrawLineNVG(vg, (float)abs_ScreenX * 0.5f, 73.0f, headX, top, COL_WHITE, 1.0f);
         }
 
+        // 骨骼
         if (DrawIo[4] && bonesOk) {
             nvgBeginPath(vg);
             nvgCircle(vg, Head.X, Head.Y, W / 5.0f);
@@ -384,16 +379,17 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawLineNVG(vg, Right_Knee.X, Right_Knee.Y, Right_Ankle.X, Right_Ankle.Y, COL_WHITE, 1.5f);
         }
 
-        // 距离（粗描边）
+        // 距离（固定 bottom+6）
         if (DrawIo[2]) {
             char distBuf[16];
             snprintf(distBuf, sizeof(distBuf), "%d m", (int)Distance);
-            float yPos = bottom + 15;
+            float yPos = bottom + 6;
             if (yPos > (float)abs_ScreenY - 25) yPos = (float)abs_ScreenY - 25;
-            DrawStrokeTextNVG(vg, g_font_agency, distBuf, {headX, yPos}, 25.0f, COL_WHITE, true);
+            DrawOutlinedTextNVG(vg, g_font_agency, distBuf, {headX, yPos}, 25.0f,
+                                COL_WHITE, COL_BLACK, true, 1.0f);
         }
 
-        // 队伍+名字（粗描边）
+        // 队伍+名字（固定 top-24，上提不跳动）
         if (DrawIo[5]) {
             char tagBuf[96];
             if (isBot) {
@@ -402,19 +398,21 @@ void DrawPlayerNVG(NVGcontext* vg) {
                 getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960));
                 snprintf(tagBuf, sizeof(tagBuf), "[%d] %s", 敌人队伍, PlayerName);
             }
-            float yPos = pelvisY - 50;
+            float yPos = top - 24;
             if (yPos < 0) yPos = 0;
-            DrawStrokeTextNVG(vg, g_font_agency, tagBuf, {pelvisX, yPos}, 18.0f, COL_WHITE, true);
+            DrawOutlinedTextNVG(vg, g_font_agency, tagBuf, {headX, yPos}, 18.0f,
+                                COL_WHITE, COL_BLACK, true, 1.0f);
         }
 
-        // 敌人地址（粗描边）
+        // 敌人地址
         if (DrawIo[7]) {
             char buf[32];
             sprintf(buf, "0x%lx", Objaddr);
-            DrawStrokeTextNVG(vg, g_font_agency, buf, {headX, bottom}, 16.0f, COL_WHITE, true);
+            DrawOutlinedTextNVG(vg, g_font_agency, buf, {headX, bottom}, 16.0f,
+                                COL_WHITE, COL_BLACK, true, 1.0f);
         }
 
-        // 血量（圆形2D 白色）
+        // 血量（小圆环：半径24 线宽4，固定 top-56）
         if (DrawIo[6]) {
             float CurHP = 当前血量;
             float MaxHP = 最大血量;
@@ -424,18 +422,19 @@ void DrawPlayerNVG(NVGcontext* vg) {
             float hp_ratio = CurHP / MaxHP;
             int hp_percent = (int)(hp_ratio * 100);
             float cx2 = headX;
-            float cy2 = headY - 70.0f;
+            float cy2 = top - 56.0f;
 
             nvgBeginPath(vg);
-            nvgArc(vg, cx2, cy2, 40.0f, -NVG_PI / 2.0f, -NVG_PI / 2.0f + 2.0f * NVG_PI * hp_ratio, NVG_CW);
+            nvgArc(vg, cx2, cy2, 24.0f, -NVG_PI / 2.0f, -NVG_PI / 2.0f + 2.0f * NVG_PI * hp_ratio, NVG_CW);
             nvgStrokeColor(vg, COL_WHITE);
-            nvgStrokeWidth(vg, 6.0f);
+            nvgStrokeWidth(vg, 4.0f);
             nvgLineCap(vg, NVG_ROUND);
             nvgStroke(vg);
 
             char hpBuf[8];
             snprintf(hpBuf, sizeof(hpBuf), "%d%%", hp_percent);
-            DrawSoftTextNVG(vg, g_font_agency, hpBuf, {cx2, cy2}, 16.0f, COL_WHITE, true);
+            DrawOutlinedTextNVG(vg, g_font_agency, hpBuf, {cx2, cy2 - 6.0f}, 13.0f,
+                                COL_WHITE, COL_BLACK, true, 1.0f);
         }
     }
 }
@@ -451,7 +450,6 @@ void DrawCanvas() {
 
     DrawLogoNVG(vg, (float)abs_ScreenX / 4.0f, (float)abs_ScreenY / 10.0f, 35.0f);
 
-    // 4: 标题一行带空格，柔光风格
     DrawSoftTextNVG(vg, g_font_agency, "Asuka追锁 @Asuka1314", {cx, 60.0f * UI_SCALE()}, 40.0f,
                     nvgRGBA(255, 255, 255, 255), true);
 
