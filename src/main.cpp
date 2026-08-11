@@ -7,6 +7,13 @@
 // 嵌入字体（编译时由 fonts/ 自动生成，【只能在本文件包含一次】）
 #include "My_font/AgencyFB-Bold.h"
 
+#include <iostream>
+#include <string>
+#include <thread>
+#include <cstdio>
+#include <unistd.h>
+#include <signal.h>
+
 NVGcontext* vg = nullptr;
 int g_nvg_font    = -1;   // 系统中文字体（中文/兜底）
 int g_font_agency = -1;   // AgencyFB-Bold（asuka 水印）
@@ -20,6 +27,20 @@ int g_font_icons  = -1;   // MaterialIcons（暂不启用）
 void DrawCanvas();
 
 timer FPS限制;
+
+// ==================== 简易控制台：输入 1 强制结束进程 ====================
+// 从终端启动本程序时，输入 1 回车立即强杀，
+// 触摸 grab / 悬浮窗随进程死亡自动释放
+static void ConsoleThread() {
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line == "1") {
+            printf("收到退出指令，进程强制结束\n");
+            fflush(stdout);
+            kill(getpid(), SIGKILL);
+        }
+    }
+}
 
 int main(int argc, char *argv[]) {
     ::graphics = GraphicsManager::getGraphicsInterface(GraphicsManager::OPENGL);
@@ -53,11 +74,15 @@ int main(int argc, char *argv[]) {
 
     ::init_My_drawdata();
 
+    // 启动控制台线程
+    printf("控制台已启动：输入 1 并回车可强制结束本进程\n");
+    std::thread(ConsoleThread).detach();
+
     static bool flag = true;
     while (flag) {
         drawBegin();
         graphics->NewFrame();   // 内部先 glClear 清屏
-        DrawCanvas();           // NanoVG（asuka + ESP）：清屏之后、ImGui 之前画，不会被清掉
+        DrawCanvas();           // NanoVG（asuka + ESP）：清屏之后、ImGui 之前画
         Layout_tick_UI(&flag);  // ImGui 菜单叠在最上层
         FPS限制.SetFps(FPS);
         FPS限制.AotuFPS();
