@@ -3,10 +3,8 @@
 #include "OpenGLGraphics.h"
 #include "imgui_impl_opengl3.h"
 
-// 【新增】声明全局回调指针，用于注入 NanoVG 绘制
-void (*g_nanovg_render_callback)() = nullptr;
-
 #if !defined(EGL_OPENGL_ES3_BIT)
+    // 如果 EGL_OPENGL_ES3_BIT 未定义，则编译这部分代码
     #define EGL_OPENGL_ES3_BIT                0x00000040
 #endif
 
@@ -40,21 +38,14 @@ void OpenGLGraphics::Setup() {
 }
 
 void OpenGLGraphics::PrepareFrame(bool resize) {
+    glClear(GL_COLOR_BUFFER_BIT);   // 清屏移到帧开头：NanoVG 和 ImGui 都画在干净的缓冲上
     ImGui_ImplOpenGL3_NewFrame();
 }
 
 void OpenGLGraphics::Render(ImDrawData *drawData) {
-    glClear(GL_COLOR_BUFFER_BIT); // 1. 先清空屏幕
-    
-    // 2. 【新增注入点】执行 NanoVG Canvas 绘制 (画红字)
-    if (g_nanovg_render_callback) {
-        g_nanovg_render_callback();
-    }
-    
-    // 3. 执行 ImGui 绘制 (画菜单 UI)
+    // 注意：这里不再 glClear，否则会把 NanoVG 画的内容清掉
     ImGui_ImplOpenGL3_RenderDrawData(drawData);
-    
-    eglSwapBuffers(m_EglDisplay, m_EglSurface); // 4. 提交
+    eglSwapBuffers(m_EglDisplay, m_EglSurface);
 }
 
 void OpenGLGraphics::PrepareShutdown() {
