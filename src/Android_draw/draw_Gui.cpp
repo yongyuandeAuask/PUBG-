@@ -57,10 +57,13 @@ void UpdateGameData() {
 }
 
 // 字体：主字体 + 系统中文字体回退
+// 字体：主字体 + 系统中文字体回退（参数传字体名，匹配 nanovg.h 签名）
 static void SetFontNVG(NVGcontext* vg, int fontId) {
     nvgFontFaceId(vg, fontId);
-    if (fontId != g_nvg_font && g_nvg_font >= 0) {
-        nvgAddFallbackFont(vg, fontId, g_nvg_font);
+    if (fontId == g_font_agency) {
+        nvgAddFallbackFont(vg, "agency", "zh");   // AgencyFB-Bold 缺中文时回退系统字体
+    } else if (fontId == g_font_icons) {
+        nvgAddFallbackFont(vg, "icons", "zh");    // MaterialIcons 缺中文时回退系统字体
     }
 }
 
