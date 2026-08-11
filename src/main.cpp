@@ -17,6 +17,8 @@ int g_font_icons  = -1;   // MaterialIcons（暂不启用）
 #include "AndroidImgui.h"
 #include "GraphicsManager.h"
 
+void DrawCanvas();
+
 timer FPS限制;
 
 int main(int argc, char *argv[]) {
@@ -54,20 +56,12 @@ int main(int argc, char *argv[]) {
     static bool flag = true;
     while (flag) {
         drawBegin();
-        graphics->NewFrame();
-
-        // 竖屏适配：竖屏时把 DisplaySize 设为 (短边, 长边)，
-        // 否则 ImGui 会把悬浮窗限制在竖屏上半部分
-        if (::displayInfo.height > ::displayInfo.width) {
-            ImGui::GetIO().DisplaySize = ImVec2((float)::abs_ScreenY, (float)::abs_ScreenX);
-        }
-
-        Layout_tick_UI(&flag);
-        // 注意：ESP 与 asuka 由 OpenGLGraphics::Render() 内的 DrawCanvas() 统一绘制，
-        // 这里不再调用任何 NanoVG 绘制函数
+        graphics->NewFrame();   // 内部先 glClear 清屏
+        DrawCanvas();           // NanoVG（asuka + ESP）：清屏之后、ImGui 之前画，不会被清掉
+        Layout_tick_UI(&flag);  // ImGui 菜单叠在最上层
         FPS限制.SetFps(FPS);
         FPS限制.AotuFPS();
-        graphics->EndFrame();
+        graphics->EndFrame();   // 只负责 ImGui 渲染 + swap，不再清屏
     }
 
     if (vg) nvgDeleteGLES3(vg);
