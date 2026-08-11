@@ -12,6 +12,7 @@
 
 extern NVGcontext* vg;
 extern int g_nvg_font;
+extern int g_font_agency;
 
 static long 类地址 = 0;
 static bool 忽略人机 = false;
@@ -57,6 +58,40 @@ void UpdateGameData() {
     driver->read((uintptr_t)Matrix, matrix, 16 * 4);
 }
 
+// ==================== NanoVG 版 DrawOutlinedText ====================
+// 对应 UE: K2_DrawText(Canvas, Font, Text, Pos, Color, ..., isCenter, ..., OutlineColor)
+// isCenter : true 时 pos.X 为水平居中锚点，false 为左对齐锚点
+// outlineWidth : 描边宽度（像素）
+void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
+                         Vector2A pos, float fontSize,
+                         NVGcolor color, NVGcolor outlineColor,
+                         bool isCenter = false, float outlineWidth = 2.0f)
+{
+    if (!vg || !text || fontId < 0) return;
+
+    nvgFontSize(vg, fontSize);
+    nvgFontFaceId(vg, fontId);
+    nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_TOP);
+
+    // 描边：8 方向偏移各画一遍
+    nvgFillColor(vg, outlineColor);
+    const float ox = outlineWidth;
+    const float oy = outlineWidth;
+    nvgText(vg, pos.X - ox, pos.Y,      text, NULL);
+    nvgText(vg, pos.X + ox, pos.Y,      text, NULL);
+    nvgText(vg, pos.X,      pos.Y - oy, text, NULL);
+    nvgText(vg, pos.X,      pos.Y + oy, text, NULL);
+    nvgText(vg, pos.X - ox, pos.Y - oy, text, NULL);
+    nvgText(vg, pos.X + ox, pos.Y - oy, text, NULL);
+    nvgText(vg, pos.X - ox, pos.Y + oy, text, NULL);
+    nvgText(vg, pos.X + ox, pos.Y + oy, text, NULL);
+
+    // 主文字
+    nvgFillColor(vg, color);
+    nvgText(vg, pos.X, pos.Y, text, NULL);
+}
+
+// ==================== 绘制玩家（NanoVG 版）====================
 void DrawPlayerNVG(NVGcontext* vg) {
     if (!初始化 || MySelf == 0 || vg == nullptr) return;
 
@@ -203,16 +238,15 @@ void DrawPlayerNVG(NVGcontext* vg) {
 
         float bottom = DrawIo[4] ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10) : BOTTOM;
 
+        // 距离
         if (DrawIo[2]) {
             char distBuf[16];
             snprintf(distBuf, sizeof(distBuf), "%d", (int)Distance);
-            nvgFontSize(vg, 30.0f);
-            nvgFontFaceId(vg, g_nvg_font);
-            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-            nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
-            nvgText(vg, Head.X, TOP - 30, distBuf, NULL);
+            DrawOutlinedTextNVG(vg, g_nvg_font, distBuf, {Head.X, TOP - 30}, 30.0f,
+                                nvgRGBA(255, 255, 255, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
         }
 
+        // 方框
         if (DrawIo[1]) {
             nvgBeginPath(vg);
             nvgRect(vg, X, TOP, W, BOTTOM - TOP);
@@ -221,6 +255,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
             nvgStroke(vg);
         }
 
+        // 射线
         if (DrawIo[3]) {
             nvgBeginPath(vg);
             nvgMoveTo(vg, px, 130.0f);
@@ -230,16 +265,15 @@ void DrawPlayerNVG(NVGcontext* vg) {
             nvgStroke(vg);
         }
 
+        // 敌人地址
         if (DrawIo[7]) {
             char buf[32];
             sprintf(buf, "0x%lx", Objaddr);
-            nvgFontSize(vg, 16.0f);
-            nvgFontFaceId(vg, g_nvg_font);
-            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-            nvgFillColor(vg, nvgRGBA(239, 241, 245, 255));
-            nvgText(vg, MIDDLE, BOTTOM, buf, NULL);
+            DrawOutlinedTextNVG(vg, g_nvg_font, buf, {MIDDLE, BOTTOM}, 16.0f,
+                                nvgRGBA(239, 241, 245, 255), nvgRGBA(0, 0, 0, 255), true, 1.5f);
         }
 
+        // 骨骼
         if (DrawIo[4]) {
             NVGcolor boneColor = nvgRGBA(255, 255, 0, 255);
             nvgBeginPath(vg);
@@ -273,15 +307,14 @@ void DrawPlayerNVG(NVGcontext* vg) {
             drawBoneLine(Right_Knee.X, Right_Knee.Y, Right_Ankle.X, Right_Ankle.Y);
         }
 
+        // 名字
         if (DrawIo[5]) {
             getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960));
-            nvgFontSize(vg, 28.0f);
-            nvgFontFaceId(vg, g_nvg_font);
-            nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_TOP);
-            nvgFillColor(vg, nvgRGBA(248, 248, 255, 255));
-            nvgText(vg, MIDDLE, TOP - 55, PlayerName, NULL);
+            DrawOutlinedTextNVG(vg, g_nvg_font, PlayerName, {MIDDLE, TOP - 55}, 28.0f,
+                                nvgRGBA(248, 248, 255, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
         }
 
+        // 血量条
         if (DrawIo[6]) {
             float healthPercent = 最大血量 > 0 ? (当前血量 / 最大血量) : 0.0f;
             float barX = X;
@@ -310,20 +343,45 @@ void DrawPlayerNVG(NVGcontext* vg) {
         }
     }
 
-    nvgFontSize(vg, 50.0f);
-    nvgFontFaceId(vg, g_nvg_font);
-    nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_TOP);
+    // 人数 / 安全
+    Vector2A countPos;
+    countPos.X = px;
+    countPos.Y = 50;
     if (PlayerCount > 0) {
         char countBuf[16];
         snprintf(countBuf, sizeof(countBuf), "%d", PlayerCount);
-        nvgFillColor(vg, nvgRGBA(255, 0, 0, 255));
-        nvgText(vg, px, 50, countBuf, NULL);
+        DrawOutlinedTextNVG(vg, g_nvg_font, countBuf, countPos, 50.0f,
+                            nvgRGBA(255, 0, 0, 255), nvgRGBA(0, 0, 0, 255), false, 2.0f);
     } else {
-        nvgFillColor(vg, nvgRGBA(0, 255, 0, 255));
-        nvgText(vg, px, 50, "安全", NULL);
+        DrawOutlinedTextNVG(vg, g_nvg_font, "安全", countPos, 50.0f,
+                            nvgRGBA(0, 255, 0, 255), nvgRGBA(0, 0, 0, 255), false, 2.0f);
     }
 }
 
+// ==================== NanoVG 画布帧 ====================
+// 由 OpenGLGraphics::Render() 在 ImGui 渲染之后、eglSwapBuffers 之前调用，
+// 保证 NanoVG 内容不会被 glClear 清掉
+void DrawCanvas() {
+    if (!vg) return;
+    nvgBeginFrame(vg, (float)abs_ScreenX, (float)abs_ScreenY, 1.0f);
+
+    // asuka：屏幕顶部中央，AgencyFB-Bold，红字黑描边
+    Vector2A asukaPos;
+    asukaPos.X = (float)abs_ScreenX * 0.5f;
+    asukaPos.Y = 20.0f;
+    DrawOutlinedTextNVG(vg, g_font_agency, "asuka", asukaPos, 64.0f,
+                        nvgRGBA(255, 0, 0, 255),     // Color
+                        nvgRGBA(0, 0, 0, 255),       // OutlineColor
+                        true,                        // isCenter
+                        3.0f);                       // 描边宽度
+
+    // ESP 绘制
+    DrawPlayerNVG(vg);
+
+    nvgEndFrame(vg);
+}
+
+// ==================== UI（ImGui 菜单，保持不变）====================
 void Layout_tick_UI(bool* main_thread_flag) {
     UpdateGameData();
     static bool show_another_window = false;
