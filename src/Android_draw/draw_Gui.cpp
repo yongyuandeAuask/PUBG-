@@ -20,6 +20,10 @@ static bool 忽略人机 = false;
 static int RealCount = 0;
 static int BotCount = 0;
 
+// 每目标最后一帧好骨骼缓存（防下蹲撕裂闪漂）
+struct BoneCache { long obj; int ok; Vector2A p[15]; };
+static BoneCache g_boneCache[64];
+
 void DrawInit() {
     if (初始化) return;
     pid = getPID("com.rekoo.pubgm");
@@ -72,6 +76,7 @@ static void TextDrawScaled(NVGcontext* vg, float x, float y, float sx, const cha
     nvgRestore(vg);
 }
 
+// 标题柔光体：松字距 + 柔光晕 + 细黑边 + 干净白体（对齐参考图）
 static void DrawSoftTextNVG(NVGcontext* vg, int fontId, const char* text,
                             Vector2A pos, float fontSize, NVGcolor color, bool isCenter = true)
 {
@@ -79,28 +84,31 @@ static void DrawSoftTextNVG(NVGcontext* vg, int fontId, const char* text,
     float fs = fontSize * UI_SCALE();
     nvgFontSize(vg, fs);
     SetFontNVG(vg, fontId);
-    nvgTextLetterSpacing(vg, -fs * 0.04f);
+    nvgTextLetterSpacing(vg, fs * 0.02f);
     nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_MIDDLE);
     float y = pos.Y + fs * 0.06f;
 
-    nvgFontBlur(vg, 3.0f);
-    nvgFillColor(vg, nvgRGBA(0, 0, 0, 160));
-    TextDrawScaled(vg, pos.X, y, 1.08f, text);
+    // 柔光晕（SDF 软边感）
+    nvgFontBlur(vg, 4.0f);
+    nvgFillColor(vg, nvgRGBA(0, 0, 0, 180));
+    TextDrawScaled(vg, pos.X, y + fs * 0.06f, 1.06f, text);
     nvgFontBlur(vg, 0.0f);
 
-    float o = fs * 0.05f + 1.0f;
+    // 细黑边
+    float o = fs * 0.04f + 0.6f;
     nvgFillColor(vg, nvgRGBA(0, 0, 0, 255));
-    TextDrawScaled(vg, pos.X - o, y - o, 1.08f, text);
-    TextDrawScaled(vg, pos.X + o, y - o, 1.08f, text);
-    TextDrawScaled(vg, pos.X - o, y + o, 1.08f, text);
-    TextDrawScaled(vg, pos.X + o, y + o, 1.08f, text);
+    TextDrawScaled(vg, pos.X - o, y - o, 1.06f, text);
+    TextDrawScaled(vg, pos.X + o, y - o, 1.06f, text);
+    TextDrawScaled(vg, pos.X - o, y + o, 1.06f, text);
+    TextDrawScaled(vg, pos.X + o, y + o, 1.06f, text);
 
+    // 白主体（单次，不叠粗）
     nvgFillColor(vg, color);
-    TextDrawScaled(vg, pos.X, y, 1.08f, text);
-    TextDrawScaled(vg, pos.X + fs * 0.03f, y, 1.08f, text);
+    TextDrawScaled(vg, pos.X, y, 1.06f, text);
     nvgTextLetterSpacing(vg, 0.0f);
 }
 
+// ESP 简版描边文本
 void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
                          Vector2A pos, float fontSize,
                          NVGcolor color, NVGcolor outlineColor,
@@ -267,19 +275,18 @@ void DrawPlayerNVG(NVGcontext* vg) {
             if (Mesh > 0x10000000 && Mesh < 0x10000000000) {
                 long int boneArrayPtr = driver->read<uint64_t>(Mesh + 0x9a8);
                 int BoneCount = driver->read<int>(Mesh + 0x9a8 + 8);
-                int maxIdx = isDog ? 20 : (isHunger ? 31 : 60);
                 if (boneArrayPtr > 0x10000000 && boneArrayPtr < 0x10000000000 &&
-                    BoneCount > maxIdx && BoneCount < 200) {
+                    BoneCount > 0 && BoneCount < 200) {
 
-                    // 一次读整块骨骼数组（单快照，防下蹲动画撕裂）
-                    FTransform boneBuf[61];
-                    driver->read(boneArrayPtr + 0x30, boneBuf, (maxIdx + 1) * (int)sizeof(FTransform));
+                    long int human = Mesh + 0x210;
+                    long int Bone = boneArrayPtr + 0x30;
 
-                    FTransform meshtrans = getBone(Mesh + 0x210);
+                    FTransform meshtrans = getBone(human);
                     FMatrix c2wMatrix = TransformToMatrix(meshtrans);
 
+                    // 逐骨骼读取（稳定）+ 世界坐标盆骨邻近校验（丢撕裂帧）
                     auto BW = [&](int idx) {
-                        return MarixToVector(MatrixMulti(TransformToMatrix(boneBuf[idx]), c2wMatrix));
+                        return MarixToVector(MatrixMulti(TransformToMatrix(getBone(Bone + idx * 48)), c2wMatrix));
                     };
 
                     Vector3A wHead = BW(idx_head); wHead.Z += 7.0f;
@@ -292,7 +299,6 @@ void DrawPlayerNVG(NVGcontext* vg) {
                     Vector3A wLK = BW(idx_lk), wRK = BW(idx_rk);
                     Vector3A wLA = BW(idx_la), wRA = BW(idx_ra);
 
-                    // 盆骨邻近校验：任何骨骼偏离盆骨超300单位=撕裂数据，丢弃
                     auto okw = [&](const Vector3A& p) {
                         return fabsf(p.X - wPelvis.X) < 300.0f &&
                                fabsf(p.Y - wPelvis.Y) < 300.0f &&
@@ -327,6 +333,34 @@ void DrawPlayerNVG(NVGcontext* vg) {
                                   onScreen(Left_Thigh) && onScreen(Right_Thigh) &&
                                   onScreen(Left_Knee) && onScreen(Right_Knee) &&
                                   onScreen(Left_Ankle) && onScreen(Right_Ankle);
+
+                        // 好帧写缓存
+                        BoneCache& bc = g_boneCache[(int)((Objaddr >> 4) & 63)];
+                        if (bonesOk) {
+                            bc.obj = Objaddr; bc.ok = 1;
+                            bc.p[0] = Head; bc.p[1] = Chest; bc.p[2] = Pelvis;
+                            bc.p[3] = Left_Shoulder; bc.p[4] = Right_Shoulder;
+                            bc.p[5] = Left_Elbow; bc.p[6] = Right_Elbow;
+                            bc.p[7] = Left_Wrist; bc.p[8] = Right_Wrist;
+                            bc.p[9] = Left_Thigh; bc.p[10] = Right_Thigh;
+                            bc.p[11] = Left_Knee; bc.p[12] = Right_Knee;
+                            bc.p[13] = Left_Ankle; bc.p[14] = Right_Ankle;
+                        }
+                    }
+
+                    // 坏帧复用最后一帧好骨骼（不闪不漂）
+                    if (!bonesOk) {
+                        BoneCache& bc = g_boneCache[(int)((Objaddr >> 4) & 63)];
+                        if (bc.obj == Objaddr && bc.ok) {
+                            Head = bc.p[0]; Chest = bc.p[1]; Pelvis = bc.p[2];
+                            Left_Shoulder = bc.p[3]; Right_Shoulder = bc.p[4];
+                            Left_Elbow = bc.p[5]; Right_Elbow = bc.p[6];
+                            Left_Wrist = bc.p[7]; Right_Wrist = bc.p[8];
+                            Left_Thigh = bc.p[9]; Right_Thigh = bc.p[10];
+                            Left_Knee = bc.p[11]; Right_Knee = bc.p[12];
+                            Left_Ankle = bc.p[13]; Right_Ankle = bc.p[14];
+                            bonesOk = true;
+                        }
                     }
                 }
             }
@@ -350,7 +384,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawLineNVG(vg, left, bottom, left, top, COL_WHITE, 1.5f);
         }
 
-        // 射线（连到方框顶）
+        // 射线
         if (DrawIo[3]) {
             DrawLineNVG(vg, (float)abs_ScreenX * 0.5f, 73.0f, headX, top, COL_WHITE, 1.0f);
         }
@@ -379,7 +413,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawLineNVG(vg, Right_Knee.X, Right_Knee.Y, Right_Ankle.X, Right_Ankle.Y, COL_WHITE, 1.5f);
         }
 
-        // 距离（固定 bottom+6）
+        // 距离
         if (DrawIo[2]) {
             char distBuf[16];
             snprintf(distBuf, sizeof(distBuf), "%d m", (int)Distance);
@@ -389,7 +423,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
                                 COL_WHITE, COL_BLACK, true, 1.0f);
         }
 
-        // 队伍+名字（固定 top-24，上提不跳动）
+        // 队伍+名字
         if (DrawIo[5]) {
             char tagBuf[96];
             if (isBot) {
@@ -412,7 +446,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
                                 COL_WHITE, COL_BLACK, true, 1.0f);
         }
 
-        // 血量（小圆环：半径24 线宽4，固定 top-56）
+        // 血量小圆环
         if (DrawIo[6]) {
             float CurHP = 当前血量;
             float MaxHP = 最大血量;
