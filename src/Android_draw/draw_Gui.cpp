@@ -59,9 +59,6 @@ void UpdateGameData() {
 }
 
 // ==================== NanoVG 版 DrawOutlinedText ====================
-// 对应 UE: K2_DrawText(Canvas, Font, Text, Pos, Color, ..., isCenter, ..., OutlineColor)
-// isCenter : true 时 pos.X 为水平居中锚点，false 为左对齐锚点
-// outlineWidth : 描边宽度（像素）
 void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
                          Vector2A pos, float fontSize,
                          NVGcolor color, NVGcolor outlineColor,
@@ -73,7 +70,6 @@ void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
     nvgFontFaceId(vg, fontId);
     nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_TOP);
 
-    // 描边：8 方向偏移各画一遍
     nvgFillColor(vg, outlineColor);
     const float ox = outlineWidth;
     const float oy = outlineWidth;
@@ -86,14 +82,18 @@ void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text,
     nvgText(vg, pos.X - ox, pos.Y + oy, text, NULL);
     nvgText(vg, pos.X + ox, pos.Y + oy, text, NULL);
 
-    // 主文字
     nvgFillColor(vg, color);
     nvgText(vg, pos.X, pos.Y, text, NULL);
 }
 
-// ==================== 绘制玩家（NanoVG 版）====================
+// ==================== 绘制玩家（NanoVG 版 + 绘制.h 索引）====================
 void DrawPlayerNVG(NVGcontext* vg) {
     if (!初始化 || MySelf == 0 || vg == nullptr) return;
+
+    auto validPt = [&](const Vector2A& p) {
+        return p.X > -100.0f && p.X < (float)abs_ScreenX + 100.0f &&
+               p.Y > -100.0f && p.Y < (float)abs_ScreenY + 100.0f;
+    };
 
     int 自己队伍 = driver->read<int>(MySelf + 0x998);
     Vector3A Z;
@@ -104,13 +104,18 @@ void DrawPlayerNVG(NVGcontext* vg) {
         long int Objaddr = driver->read<uint64_t>(Arrayaddr + 0x8 * i);
         if (Objaddr <= 0xffff || Objaddr == 0 || Objaddr <= 0x10000000 || Objaddr % 4 != 0 || Objaddr >= 0x10000000000) continue;
         if (MySelf == Objaddr) continue;
-        if (driver->read<float>(Objaddr + 0x2b78) != 479.5f) continue;
 
         int ClassID = driver->read<int>(Objaddr + 24);
         long FNameEntry = driver->read<uint64_t>(driver->read<uint64_t>(类地址 + (ClassID / 0x4000) * 0x8) + (ClassID % 0x4000) * 0x8);
         char ClassName[64] = "";
         driver->read((uintptr_t)(FNameEntry + 0xC), ClassName, 64);
         if (strstr(ClassName, "BPPawn_Escape_Raven") != 0 || strstr(ClassName, "BPPawn_Escape_UAV_C") != 0) continue;
+
+        float 玩家标志 = driver->read<float>(Objaddr + 0x2b78);
+        bool isDog = (strstr(ClassName, "AIMob_PatrolDog_C") != 0);
+        bool isHunger = (strstr(ClassName, "BPPawn_HungerH_C") != 0) ||
+                        (strstr(ClassName, "BPPawn_HungerB_C") != 0);
+        if (玩家标志 != 479.5f && !isDog && !isHunger) continue;
 
         int 状态 = driver->read<int>(Objaddr + 0x1058);
         if (状态 == 1048592 || 状态 == 1048576) continue;
@@ -147,102 +152,133 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float BOTTOM = Y + W;
         float TOP = Y - W;
 
+        // ==================== 骨骼索引（完整移植自 绘制.h）====================
+        int idx_head, idx_chest, idx_pelvis, idx_lsh, idx_rsh, idx_lelb, idx_relb,
+            idx_lw, idx_rw, idx_lth, idx_rth, idx_lk, idx_rk, idx_la, idx_ra;
+
+        if (isDog) {
+            idx_head = 5; idx_chest = 3; idx_pelvis = 0;
+            idx_lsh = 7;  idx_rsh = 11; idx_lelb = 8;  idx_relb = 12;
+            idx_lw = 9;   idx_rw = 13;
+            idx_lth = 14; idx_rth = 18; idx_lk = 15; idx_rk = 19;
+            idx_la = 16;  idx_ra = 20;
+        } else if (isHunger) {
+            idx_head = 5; idx_chest = 3; idx_pelvis = 0;
+            idx_lsh = 11; idx_rsh = 18; idx_lelb = 12; idx_relb = 19;
+            idx_lw = 13;  idx_rw = 20;
+            idx_lth = 24; idx_rth = 29; idx_lk = 25; idx_rk = 30;
+            idx_la = 26;  idx_ra = 31;
+        } else if (敌人队伍 < 101) {
+            idx_head = 5; idx_chest = 4; idx_pelvis = 0;
+            idx_lsh = 11; idx_rsh = 32; idx_lelb = 12; idx_relb = 33;
+            idx_lw = 63;  idx_rw = 62;
+            idx_lth = 52; idx_rth = 56; idx_lk = 53; idx_rk = 57;
+            idx_la = 54;  idx_ra = 58;
+        } else if (敌人队伍 >= 996 && 玩家标志 == 479.5f) {
+            idx_head = 5; idx_chest = 4; idx_pelvis = 0;
+            idx_lsh = 7;  idx_rsh = 13; idx_lelb = 8;  idx_relb = 14;
+            idx_lw = 9;   idx_rw = 15;
+            idx_lth = 18; idx_rth = 21; idx_lk = 19; idx_rk = 22;
+            idx_la = 20;  idx_ra = 23;
+        } else if (driver->read<float>(Objaddr + 0x0) == 200.0f) {
+            idx_head = 5; idx_chest = 3; idx_pelvis = 0;
+            idx_lsh = 7;  idx_rsh = 11; idx_lelb = 8;  idx_relb = 12;
+            idx_lw = 9;   idx_rw = 13;
+            idx_lth = 15; idx_rth = 19; idx_lk = 16; idx_rk = 20;
+            idx_la = 17;  idx_ra = 21;
+        } else {
+            idx_head = 5; idx_chest = 4; idx_pelvis = 0;
+            idx_lsh = 13; idx_rsh = 34; idx_lelb = 14; idx_relb = 35;
+            idx_lw = 16;  idx_rw = 37;
+            idx_lth = 54; idx_rth = 58; idx_lk = 55; idx_rk = 59;
+            idx_la = 56;  idx_ra = 60;
+        }
+
         Vector2A Head, Chest, Pelvis, Left_Shoulder, Right_Shoulder,
                  Left_Elbow, Right_Elbow, Left_Wrist, Right_Wrist,
                  Left_Thigh, Right_Thigh, Left_Knee, Right_Knee,
                  Left_Ankle, Right_Ankle;
+        bool bonesOk = false;
 
         if (DrawIo[4]) {
             long int Mesh = driver->read<uint64_t>(Objaddr + 0x510);
-            long int human = Mesh + 0x210;
-            long int Bone = driver->read<uint64_t>(Mesh + 0x9a8) + 0x30;
+            if (Mesh > 0x10000000 && Mesh < 0x10000000000) {
+                long int boneArrayPtr = driver->read<uint64_t>(Mesh + 0x9a8);
+                int BoneCount = driver->read<int>(Mesh + 0x9a8 + 8);
+                if (boneArrayPtr > 0x10000000 && boneArrayPtr < 0x10000000000 &&
+                    BoneCount > 0 && BoneCount < 200) {
 
-            FTransform meshtrans = getBone(human);
-            FMatrix c2wMatrix = TransformToMatrix(meshtrans);
+                    long int human = Mesh + 0x210;
+                    long int Bone = boneArrayPtr + 0x30;
 
-            FTransform headtrans = getBone(Bone + 9 * 48);
-            FMatrix boneMatrix = TransformToMatrix(headtrans);
-            Vector3A relLocation = MarixToVector(MatrixMulti(boneMatrix, c2wMatrix));
-            Head = WorldToScreen(relLocation, matrix, camera);
+                    FTransform meshtrans = getBone(human);
+                    FMatrix c2wMatrix = TransformToMatrix(meshtrans);
 
-            FTransform chesttrans = getBone(Bone + 5 * 48);
-            FMatrix boneMatrix1 = TransformToMatrix(chesttrans);
-            Vector3A relLocation1 = MarixToVector(MatrixMulti(boneMatrix1, c2wMatrix));
-            Chest = WorldToScreen(relLocation1, matrix, camera);
+                    FTransform headtrans = getBone(Bone + idx_head * 48);
+                    Vector3A HeadPos = MarixToVector(MatrixMulti(TransformToMatrix(headtrans), c2wMatrix));
+                    HeadPos.Z += 7.0f;
+                    Head = WorldToScreen(HeadPos, matrix, camera);
 
-            FTransform pelvistrans = getBone(Bone + 2 * 48);
-            FMatrix boneMatrix2 = TransformToMatrix(pelvistrans);
-            Vector3A LrelLocation1 = MarixToVector(MatrixMulti(boneMatrix2, c2wMatrix));
-            Pelvis = WorldToScreen(LrelLocation1, matrix, camera);
+                    FTransform chesttrans = getBone(Bone + idx_chest * 48);
+                    Chest = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(chesttrans), c2wMatrix)), matrix, camera);
 
-            FTransform lshtrans = getBone(Bone + 21 * 48);
-            FMatrix boneMatrix3 = TransformToMatrix(lshtrans);
-            Vector3A relLocation2 = MarixToVector(MatrixMulti(boneMatrix3, c2wMatrix));
-            Left_Shoulder = WorldToScreen(relLocation2, matrix, camera);
+                    FTransform pelvistrans = getBone(Bone + idx_pelvis * 48);
+                    Pelvis = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(pelvistrans), c2wMatrix)), matrix, camera);
 
-            FTransform rshtrans = getBone(Bone + 44 * 48);
-            FMatrix boneMatrix4 = TransformToMatrix(rshtrans);
-            Vector3A relLocation3 = MarixToVector(MatrixMulti(boneMatrix4, c2wMatrix));
-            Right_Shoulder = WorldToScreen(relLocation3, matrix, camera);
+                    FTransform lshtrans = getBone(Bone + idx_lsh * 48);
+                    Left_Shoulder = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(lshtrans), c2wMatrix)), matrix, camera);
 
-            FTransform lelbtrans = getBone(Bone + 22 * 48);
-            FMatrix boneMatrix5 = TransformToMatrix(lelbtrans);
-            Vector3A relLocation4 = MarixToVector(MatrixMulti(boneMatrix5, c2wMatrix));
-            Left_Elbow = WorldToScreen(relLocation4, matrix, camera);
+                    FTransform rshtrans = getBone(Bone + idx_rsh * 48);
+                    Right_Shoulder = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(rshtrans), c2wMatrix)), matrix, camera);
 
-            FTransform relbtrans = getBone(Bone + 45 * 48);
-            FMatrix boneMatrix6 = TransformToMatrix(relbtrans);
-            Vector3A relLocation5 = MarixToVector(MatrixMulti(boneMatrix6, c2wMatrix));
-            Right_Elbow = WorldToScreen(relLocation5, matrix, camera);
+                    FTransform lelbtrans = getBone(Bone + idx_lelb * 48);
+                    Left_Elbow = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(lelbtrans), c2wMatrix)), matrix, camera);
 
-            FTransform lwtrans = getBone(Bone + 23 * 48);
-            FMatrix boneMatrix7 = TransformToMatrix(lwtrans);
-            Vector3A relLocation6 = MarixToVector(MatrixMulti(boneMatrix7, c2wMatrix));
-            Left_Wrist = WorldToScreen(relLocation6, matrix, camera);
+                    FTransform relbtrans = getBone(Bone + idx_relb * 48);
+                    Right_Elbow = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(relbtrans), c2wMatrix)), matrix, camera);
 
-            FTransform rwtrans = getBone(Bone + 46 * 48);
-            FMatrix boneMatrix8 = TransformToMatrix(rwtrans);
-            Vector3A relLocation7 = MarixToVector(MatrixMulti(boneMatrix8, c2wMatrix));
-            Right_Wrist = WorldToScreen(relLocation7, matrix, camera);
+                    FTransform lwtrans = getBone(Bone + idx_lw * 48);
+                    Left_Wrist = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(lwtrans), c2wMatrix)), matrix, camera);
 
-            FTransform Llshtrans = getBone(Bone + 68 * 48);
-            FMatrix boneMatrix9 = TransformToMatrix(Llshtrans);
-            Vector3A LrelLocation2 = MarixToVector(MatrixMulti(boneMatrix9, c2wMatrix));
-            Left_Thigh = WorldToScreen(LrelLocation2, matrix, camera);
+                    FTransform rwtrans = getBone(Bone + idx_rw * 48);
+                    Right_Wrist = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(rwtrans), c2wMatrix)), matrix, camera);
 
-            FTransform Lrshtrans = getBone(Bone + 72 * 48);
-            FMatrix boneMatrix10 = TransformToMatrix(Lrshtrans);
-            Vector3A LrelLocation3 = MarixToVector(MatrixMulti(boneMatrix10, c2wMatrix));
-            Right_Thigh = WorldToScreen(LrelLocation3, matrix, camera);
+                    FTransform Llshtrans = getBone(Bone + idx_lth * 48);
+                    Left_Thigh = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Llshtrans), c2wMatrix)), matrix, camera);
 
-            FTransform Llelbtrans = getBone(Bone + 69 * 48);
-            FMatrix boneMatrix11 = TransformToMatrix(Llelbtrans);
-            Vector3A LrelLocation4 = MarixToVector(MatrixMulti(boneMatrix11, c2wMatrix));
-            Left_Knee = WorldToScreen(LrelLocation4, matrix, camera);
+                    FTransform Lrshtrans = getBone(Bone + idx_rth * 48);
+                    Right_Thigh = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Lrshtrans), c2wMatrix)), matrix, camera);
 
-            FTransform Lrelbtrans = getBone(Bone + 73 * 48);
-            FMatrix boneMatrix12 = TransformToMatrix(Lrelbtrans);
-            Vector3A LrelLocation5 = MarixToVector(MatrixMulti(boneMatrix12, c2wMatrix));
-            Right_Knee = WorldToScreen(LrelLocation5, matrix, camera);
+                    FTransform Llelbtrans = getBone(Bone + idx_lk * 48);
+                    Left_Knee = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Llelbtrans), c2wMatrix)), matrix, camera);
 
-            FTransform Llwtrans = getBone(Bone + 70 * 48);
-            FMatrix boneMatrix13 = TransformToMatrix(Llwtrans);
-            Vector3A LrelLocation6 = MarixToVector(MatrixMulti(boneMatrix13, c2wMatrix));
-            Left_Ankle = WorldToScreen(LrelLocation6, matrix, camera);
+                    FTransform Lrelbtrans = getBone(Bone + idx_rk * 48);
+                    Right_Knee = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Lrelbtrans), c2wMatrix)), matrix, camera);
 
-            FTransform Lrwtrans = getBone(Bone + 74 * 48);
-            FMatrix boneMatrix14 = TransformToMatrix(Lrwtrans);
-            Vector3A LrelLocation7 = MarixToVector(MatrixMulti(boneMatrix14, c2wMatrix));
-            Right_Ankle = WorldToScreen(LrelLocation7, matrix, camera);
+                    FTransform Llwtrans = getBone(Bone + idx_la * 48);
+                    Left_Ankle = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Llwtrans), c2wMatrix)), matrix, camera);
+
+                    FTransform Lrwtrans = getBone(Bone + idx_ra * 48);
+                    Right_Ankle = WorldToScreen(MarixToVector(MatrixMulti(TransformToMatrix(Lrwtrans), c2wMatrix)), matrix, camera);
+
+                    bonesOk = validPt(Head) && validPt(Chest) && validPt(Pelvis) &&
+                              validPt(Left_Shoulder) && validPt(Right_Shoulder) &&
+                              validPt(Left_Elbow) && validPt(Right_Elbow) &&
+                              validPt(Left_Wrist) && validPt(Right_Wrist) &&
+                              validPt(Left_Thigh) && validPt(Right_Thigh) &&
+                              validPt(Left_Knee) && validPt(Right_Knee) &&
+                              validPt(Left_Ankle) && validPt(Right_Ankle);
+                }
+            }
         }
 
-        float bottom = DrawIo[4] ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10) : BOTTOM;
+        float bottom = (DrawIo[4] && bonesOk) ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10) : BOTTOM;
 
-        // 距离
+        // 距离（修复：标在敌人脚下，居中）
         if (DrawIo[2]) {
             char distBuf[16];
-            snprintf(distBuf, sizeof(distBuf), "%d", (int)Distance);
-            DrawOutlinedTextNVG(vg, g_nvg_font, distBuf, {Head.X, TOP - 30}, 30.0f,
+            snprintf(distBuf, sizeof(distBuf), "%d M", (int)Distance);
+            DrawOutlinedTextNVG(vg, g_nvg_font, distBuf, {MIDDLE, bottom + 6}, 24.0f,
                                 nvgRGBA(255, 255, 255, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
         }
 
@@ -274,7 +310,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
         }
 
         // 骨骼
-        if (DrawIo[4]) {
+        if (DrawIo[4] && bonesOk) {
             NVGcolor boneColor = nvgRGBA(255, 255, 0, 255);
             nvgBeginPath(vg);
             nvgCircle(vg, Head.X, Head.Y, W / 5.0f);
@@ -342,41 +378,42 @@ void DrawPlayerNVG(NVGcontext* vg) {
             nvgText(vg, barX + barWidth + 3, barY + barHeight * 0.5f, healthText, NULL);
         }
     }
-
-    // 人数 / 安全
-    Vector2A countPos;
-    countPos.X = px;
-    countPos.Y = 50;
-    if (PlayerCount > 0) {
-        char countBuf[16];
-        snprintf(countBuf, sizeof(countBuf), "%d", PlayerCount);
-        DrawOutlinedTextNVG(vg, g_nvg_font, countBuf, countPos, 50.0f,
-                            nvgRGBA(255, 0, 0, 255), nvgRGBA(0, 0, 0, 255), false, 2.0f);
-    } else {
-        DrawOutlinedTextNVG(vg, g_nvg_font, "安全", countPos, 50.0f,
-                            nvgRGBA(0, 255, 0, 255), nvgRGBA(0, 0, 0, 255), false, 2.0f);
-    }
 }
 
 // ==================== NanoVG 画布帧 ====================
-// 由 OpenGLGraphics::Render() 在 ImGui 渲染之后、eglSwapBuffers 之前调用，
-// 保证 NanoVG 内容不会被 glClear 清掉
 void DrawCanvas() {
     if (!vg) return;
     nvgBeginFrame(vg, (float)abs_ScreenX, (float)abs_ScreenY, 1.0f);
 
-    // asuka：屏幕顶部中央，AgencyFB-Bold，红字黑描边
-    Vector2A asukaPos;
-    asukaPos.X = (float)abs_ScreenX * 0.5f;
-    asukaPos.Y = 20.0f;
-    DrawOutlinedTextNVG(vg, g_font_agency, "asuka", asukaPos, 64.0f,
-                        nvgRGBA(255, 0, 0, 255),     // Color
-                        nvgRGBA(0, 0, 0, 255),       // OutlineColor
-                        true,                        // isCenter
-                        3.0f);                       // 描边宽度
+    float cx = (float)abs_ScreenX * 0.5f;
 
-    // ESP 绘制
+    // asuka：顶部中央，白字黑描边
+    Vector2A asukaPos;
+    asukaPos.X = cx;
+    asukaPos.Y = 10.0f;
+    DrawOutlinedTextNVG(vg, g_font_agency, "asuka", asukaPos, 60.0f,
+                        nvgRGBA(255, 255, 255, 255),   // 白色主字
+                        nvgRGBA(0, 0, 0, 255),         // 黑色描边
+                        true, 3.0f);
+
+    // ESP
     DrawPlayerNVG(vg);
+
+    // 人数 / 安全：白底小框 + 蓝字，放在 asuka 下方，不再重叠
+    char countBuf[16];
+    snprintf(countBuf, sizeof(countBuf), "%d", PlayerCount);
+    const char* showText = (PlayerCount > 0) ? countBuf : "安全";
+
+    nvgBeginPath(vg);
+    nvgRect(vg, cx - 45, 82, 90, 36);
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 230));
+    nvgFill(vg);
+
+    nvgFontSize(vg, 26.0f);
+    nvgFontFaceId(vg, g_nvg_font);
+    nvgTextAlign(vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    nvgFillColor(vg, (PlayerCount > 0) ? nvgRGBA(0, 73, 160, 255) : nvgRGBA(0, 150, 0, 255));
+    nvgText(vg, cx, 100, showText, NULL);
 
     nvgEndFrame(vg);
 }
