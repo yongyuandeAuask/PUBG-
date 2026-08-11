@@ -6,7 +6,7 @@
 
 // 嵌入字体（编译时由 fonts/ 自动生成，【只能在本文件包含一次】）
 #include "My_font/AgencyFB-Bold.h"
-
+#include "My_font/MaterialIcons-Regular.h"
 #include <iostream>
 #include <string>
 #include <thread>
@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
 
     // 嵌入字体（const 数组需要强制转换）
     g_font_agency = nvgCreateFontMem(vg, "agency", (unsigned char*)AgencyFB_Bold_ttf, (int)AgencyFB_Bold_ttf_len, 0);
-
+    g_font_icons = nvgCreateFontMem(vg, "icons", MaterialIcons_Regular_otf, (int)MaterialIcons_Regular_otf_len, 0);
     // 中文字体走系统（中文太大不嵌入）
     g_nvg_font = nvgCreateFont(vg, "zh", "/system/fonts/NotoSansCJK-Regular.ttc");
     if (g_nvg_font == -1) g_nvg_font = nvgCreateFont(vg, "zh", "/system/fonts/Roboto-Regular.ttf");
