@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cmath>
+#include <algorithm> // 用于 std::min / std::max
 
 extern NVGcontext* vg;
 extern int g_nvg_font;
@@ -274,7 +275,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
 
         float bottom = (DrawIo[4] && bonesOk) ? ((Left_Ankle.Y < Right_Ankle.Y) ? Right_Ankle.Y + W / 10 : Left_Ankle.Y + W / 10) : BOTTOM;
 
-        // 距离（修复：标在敌人脚下，居中）
+        // 距离（标在敌人脚下，居中）
         if (DrawIo[2]) {
             char distBuf[16];
             snprintf(distBuf, sizeof(distBuf), "%d M", (int)Distance);
@@ -309,21 +310,24 @@ void DrawPlayerNVG(NVGcontext* vg) {
                                 nvgRGBA(239, 241, 245, 255), nvgRGBA(0, 0, 0, 255), true, 1.5f);
         }
 
-        // 骨骼
+        // ==================== 骨骼 (改为白色，线宽 1.5f) ====================
         if (DrawIo[4] && bonesOk) {
-            NVGcolor boneColor = nvgRGBA(255, 255, 0, 255);
+            NVGcolor boneColor = nvgRGBA(255, 255, 255, 255); // 纯白色
+            
+            // 头部圆圈
             nvgBeginPath(vg);
             nvgCircle(vg, Head.X, Head.Y, W / 5.0f);
             nvgStrokeColor(vg, boneColor);
-            nvgStrokeWidth(vg, 2.5f);
+            nvgStrokeWidth(vg, 1.5f);
             nvgStroke(vg);
 
+            // 骨骼连线封装 (对应 K2_DrawLine)
             auto drawBoneLine = [&](float x1, float y1, float x2, float y2) {
                 nvgBeginPath(vg);
                 nvgMoveTo(vg, x1, y1);
                 nvgLineTo(vg, x2, y2);
                 nvgStrokeColor(vg, boneColor);
-                nvgStrokeWidth(vg, 2.5f);
+                nvgStrokeWidth(vg, 1.5f);
                 nvgStroke(vg);
             };
 
@@ -350,32 +354,63 @@ void DrawPlayerNVG(NVGcontext* vg) {
                                 nvgRGBA(248, 248, 255, 255), nvgRGBA(0, 0, 0, 255), true, 2.0f);
         }
 
-        // 血量条
+        // ==================== 血量条 (UE Canvas 风格) ====================
         if (DrawIo[6]) {
-            float healthPercent = 最大血量 > 0 ? (当前血量 / 最大血量) : 0.0f;
-            float barX = X;
-            float barY = TOP - 16 - 8;
-            float barWidth = W;
-            float barHeight = 8;
+            float CurHP = 当前血量;
+            float MaxHP = 最大血量;
+            if (MaxHP <= 0) MaxHP = 100.0f;
+            if (CurHP < 0) CurHP = 0;
+            if (CurHP > MaxHP) CurHP = MaxHP;
 
+            // 1. 颜色计算 (红绿渐变)
+            float r = std::min(((510.f * (MaxHP - CurHP)) / MaxHP) / 255.f, 1.f);
+            float g = std::min(((510.f * CurHP) / MaxHP) / 255.f, 1.f);
+            float b = 0.f;
+            float a = 0.85f; 
+
+            // 2. 倒地状态判断 (血量<=0)
+            bool isDowned = (CurHP <= 0.01f);
+            if (isDowned) {
+                r = 0.63f; g = 0.82f; b = 0.42f; a = 0.9f;
+                CurHP = 0; // 倒地时血条清空
+            }
+
+            // 3. 尺寸计算 (随距离缩放)
+            float mWidthScale = std::min(0.1f * Distance, 35.f);
+            float mWidth = 80.f - mWidthScale;
+            float mHeight = mWidth * 0.07f;
+            if (mHeight < 3.0f) mHeight = 3.0f; // 保证最小高度
+
+            // 4. 位置计算 (头顶上方)
+            float headX = (bonesOk && Head.X > 0) ? Head.X : MIDDLE;
+            float headY = (bonesOk && Head.Y > 0) ? Head.Y : TOP;
+            float barX = headX - (mWidth / 2.0f);
+            float barY = headY - (mHeight * 4.5f); 
+
+            // 5. 填充血量
+            float fillWidth = (CurHP / MaxHP) * mWidth;
             nvgBeginPath(vg);
-            nvgRect(vg, barX, barY, barWidth, barHeight);
-            nvgFillColor(vg, nvgRGBA(60, 60, 60, 255));
+            nvgRect(vg, barX, barY, fillWidth, mHeight);
+            nvgFillColor(vg, nvgRGBAf(r, g, b, a));
             nvgFill(vg);
 
-            float fillWidth = barWidth * healthPercent;
-            nvgBeginPath(vg);
-            nvgRect(vg, barX, barY, fillWidth, barHeight);
-            nvgFillColor(vg, nvgRGBA(10, 240, 10, 255));
-            nvgFill(vg);
+            // 6. 绘制黑色外框和分割线
+            nvgStrokeColor(vg, nvgRGBA(0, 0, 0, 255));
+            nvgStrokeWidth(vg, 1.5f);
 
-            char healthText[16];
-            sprintf(healthText, "%.0f%%", healthPercent * 100);
-            nvgFontSize(vg, 14.0f);
-            nvgFontFaceId(vg, g_nvg_font);
-            nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-            nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
-            nvgText(vg, barX + barWidth + 3, barY + barHeight * 0.5f, healthText, NULL);
+            // 外框
+            nvgBeginPath(vg);
+            nvgRect(vg, barX, barY, mWidth, mHeight);
+            nvgStroke(vg);
+
+            // 内部 4 条竖线 (均匀分 5 段)
+            for (int i = 1; i <= 4; i++) {
+                float lineX = barX + (mWidth / 5.0f) * i;
+                nvgBeginPath(vg);
+                nvgMoveTo(vg, lineX, barY);
+                nvgLineTo(vg, lineX, barY + mHeight);
+                nvgStroke(vg);
+            }
         }
     }
 }
@@ -392,14 +427,14 @@ void DrawCanvas() {
     asukaPos.X = cx;
     asukaPos.Y = 10.0f;
     DrawOutlinedTextNVG(vg, g_font_agency, "asuka", asukaPos, 60.0f,
-                        nvgRGBA(255, 255, 255, 255),   // 白色主字
-                        nvgRGBA(0, 0, 0, 255),         // 黑色描边
+                        nvgRGBA(255, 255, 255, 255),
+                        nvgRGBA(0, 0, 0, 255),
                         true, 3.0f);
 
     // ESP
     DrawPlayerNVG(vg);
 
-    // 人数 / 安全：白底小框 + 蓝字，放在 asuka 下方，不再重叠
+    // 人数 / 安全：白底小框 + 蓝字，放在 asuka 下方
     char countBuf[16];
     snprintf(countBuf, sizeof(countBuf), "%d", PlayerCount);
     const char* showText = (PlayerCount > 0) ? countBuf : "安全";
