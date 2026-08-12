@@ -26,6 +26,7 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/include/ImGui
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/include/ImGui/backends
 LOCAL_SRC_FILES := src/main.cpp
 LOCAL_SRC_FILES += src/Android_draw/nanovg.c
+LOCAL_SRC_FILES += src/Android_draw/VideoFramePlayer.cpp
 LOCAL_SRC_FILES += src/Android_draw/draw_Gui.cpp
 LOCAL_SRC_FILES += src/Android_touch/TouchHelperA.cpp
 LOCAL_SRC_FILES += src/Android_Graphics/GraphicsManager.cpp
