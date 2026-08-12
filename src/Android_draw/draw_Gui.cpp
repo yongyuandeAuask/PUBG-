@@ -21,54 +21,59 @@ extern int g_font_agency;
 
 static long 类地址 = 0;
 static bool 忽略人机 = false;
+static bool g_titleOutline = false;
+static bool g_fovCircle = true;
 static int RealCount = 0;
 static int BotCount = 0;
+static volatile int g_isFiring = 0;
+static volatile float g_aimDs = 0;
 
 struct BoneCache { long obj; int ok; Vector2A p[15]; };
 static BoneCache g_boneCache[64];
 
-// ==================== 测试追踪配置/状态 ====================
+// ==================== 追锁配置（弹道参数适配下坠.cpp）====================
 static struct {
     bool enable = false;
-    int  mode = 0;        // 0角度追踪 1坐标追踪 2寄存器转储
-    int  part = 0;        // 0头 1胸 2盆骨
-    int  trigger = 0;     // 0总是 1开火 2开镜
-    int  regLoc = 0;      // StartLoc: 0=Q0 1=Q1 2=X1指针
-    int  regRot = 1;      // StartRot: 0=Q0 1=Q1 2=X2指针
+    int  part = 0;
+    int  trigger = 0;
     bool predict = true;
-    bool drop = true;
+    float predScale = 1.0f;     // 预判强度（下坠.cpp NumIo[22]）
+    float dropCoef = 540.0f;    // 下坠系数（下坠.cpp 540*t²）
+    float recoilComp = 0.0f;    // 开火压枪补偿（0=关）
+    bool dynFov = false;        // 动态瞄圈（下坠.cpp DrawIo[25]）
     bool prob = false;
     float probRate = 0.8f;
     float fov = 250.0f;
 } g_Aim;
 
-static struct {
-    bool valid = false;
-    Vector3A pos;
-    Vector3A vel;
-    float screenDist = 0;
-} g_Target;
-
+static struct { bool valid = false; Vector3A pos, vel; float screenDist = 0; } g_Target;
 static float g_BulletSpeed = 600.0f;
 static volatile uint64_t g_bpHits = 0;
 static volatile bool g_bpSet = false;
 
-static struct {
-    uint64_t x0, x1, x2, x3;
-    float q0[4], q1[4], q2[4], q3[4];
-    uint64_t hits;
-} g_Dump;
-
-static Vector3A UnpackQ(__uint128_t q) { float* f = (float*)&q; Vector3A v; v.X=f[0]; v.Y=f[1]; v.Z=f[2]; return v; }
-static void PackQ(__uint128_t& q, float a, float b, float c) { float* f = (float*)&q; f[0]=a; f[1]=b; f[2]=c; }
+static Vector3A UnpackHFA(const paradise_hwbp_record& r, int base) {
+    const __uint128_t* qs = &r.q0;
+    Vector3A v;
+    v.X = *(const float*)&qs[base + 0];
+    v.Y = *(const float*)&qs[base + 1];
+    v.Z = *(const float*)&qs[base + 2];
+    return v;
+}
+static void PackHFA(paradise_hwbp_record& r, int base, const Vector3A& v) {
+    __uint128_t* qs = &r.q0;
+    *(float*)&qs[base + 0] = v.X;
+    *(float*)&qs[base + 1] = v.Y;
+    *(float*)&qs[base + 2] = v.Z;
+}
 
 static void AimFrameBegin() { g_Target.valid = false; g_Target.screenDist = 1e9f; }
 static void AimFeedTarget(const Vector3A& pos, const Vector3A& vel, float sd) {
     if (sd < g_Target.screenDist) { g_Target.valid = true; g_Target.pos = pos; g_Target.vel = vel; g_Target.screenDist = sd; }
 }
 static void AimFeedBulletSpeed(float v) { if (v > 50.0f) g_BulletSpeed = v; }
+static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
 
-// ==================== 追踪线程 ====================
+// ==================== 追锁线程 ====================
 static void* HwbpAimThread(void*) {
     while (true) {
         if (!初始化 || !libbase || !MySelf) { usleep(50000); continue; }
@@ -85,8 +90,9 @@ static void* HwbpAimThread(void*) {
             g_bpSet = driver->hwbp_set(&pt, 1);
             if (!g_bpSet) { usleep(100000); continue; }
         }
+
         bool trigOk = true;
-        if (g_Aim.trigger == 1)      trigOk = driver->read<int>(MySelf + 0x1830) != 0;
+        if (g_Aim.trigger == 1)      trigOk = g_isFiring != 0;
         else if (g_Aim.trigger == 2) trigOk = driver->read<int>(MySelf + 0x1134) != 0;
 
         paradise_hwbp_record recs[8];
@@ -96,48 +102,53 @@ static void* HwbpAimThread(void*) {
                 g_bpHits++;
                 auto& rec = recs[i];
 
-                if (g_Aim.mode == 2) {
-                    g_Dump.x0=rec.x0; g_Dump.x1=rec.x1; g_Dump.x2=rec.x2; g_Dump.x3=rec.x3;
-                    memcpy(g_Dump.q0,&rec.q0,16); memcpy(g_Dump.q1,&rec.q1,16);
-                    memcpy(g_Dump.q2,&rec.q2,16); memcpy(g_Dump.q3,&rec.q3,16);
-                    g_Dump.hits = g_bpHits;
-                    printf("[HWBP]#%llu X0=%llx X1=%llx X2=%llx X3=%llx Q0=(%.1f,%.1f,%.1f) Q1=(%.1f,%.1f,%.1f)\n",
-                        (unsigned long long)g_bpHits, (unsigned long long)rec.x0, (unsigned long long)rec.x1,
-                        (unsigned long long)rec.x2, (unsigned long long)rec.x3,
-                        g_Dump.q0[0], g_Dump.q0[1], g_Dump.q0[2], g_Dump.q1[0], g_Dump.q1[1], g_Dump.q1[2]);
-                    continue;
-                }
-
                 if (!trigOk || !g_Target.valid) continue;
                 if (g_Aim.prob && ((float)rand()/RAND_MAX) > g_Aim.probRate) continue;
 
-                Vector3A start;
-                if (g_Aim.regLoc == 0)      start = UnpackQ(rec.q0);
-                else if (g_Aim.regLoc == 1) start = UnpackQ(rec.q1);
-                else driver->read((uintptr_t)rec.x1, &start, sizeof(start));
-                if (fabsf(start.X) < 1.0f && fabsf(start.Y) < 1.0f && fabsf(start.Z) < 1.0f) continue;
+                Vector3A start = UnpackHFA(rec, 0);
+                if (fabsf(start.X) < 1.0f && fabsf(start.Y) < 1.0f) continue;
 
+                // ===== 弹道解算（适配下坠.cpp：预判*强度 + 540*t² + 开火压枪）=====
                 Vector3A aim = g_Target.pos;
                 float dist = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2));
-                float t = dist / g_BulletSpeed;
-                if (g_Aim.predict) { aim.X += g_Target.vel.X*t; aim.Y += g_Target.vel.Y*t; aim.Z += g_Target.vel.Z*t; }
-                if (g_Aim.drop)    { aim.Z += 500.0f * t * t; }
-
-                if (g_Aim.mode == 1) {
-                    if (g_Aim.regLoc == 0)      { PackQ(rec.q0, aim.X, aim.Y, aim.Z); PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q0, PARADISE_BP_OP_WRITE); }
-                    else if (g_Aim.regLoc == 1) { PackQ(rec.q1, aim.X, aim.Y, aim.Z); PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q1, PARADISE_BP_OP_WRITE); }
-                    else driver->write((uintptr_t)rec.x1, &aim, sizeof(aim));
+                float fly = dist / g_BulletSpeed;
+                if (g_Aim.predict) {
+                    aim.X += g_Target.vel.X * fly * g_Aim.predScale;
+                    aim.Y += g_Target.vel.Y * fly * g_Aim.predScale;
+                    aim.Z += g_Target.vel.Z * fly * g_Aim.predScale;
+                }
+                aim.Z += g_Aim.dropCoef * fly * fly;
+                if (g_Aim.recoilComp > 0.0f && g_isFiring) {
+                    aim.Z -= (dist / 100.0f) * g_Aim.recoilComp;
                 }
 
+                // ===== 投影点FOV判定（适配下坠.cpp AimDs<=圈 才动手）=====
+                float c = matrix[3]*aim.X + matrix[7]*aim.Y + matrix[11]*aim.Z + matrix[15];
+                float aimDs = 1e9f;
+                if (c > 0.001f) {
+                    float ax = px + (matrix[0]*aim.X + matrix[4]*aim.Y + matrix[8]*aim.Z + matrix[12]) / c * px;
+                    float ay = py - (matrix[1]*aim.X + matrix[5]*aim.Y + matrix[9]*aim.Z + matrix[13]) / c * py;
+                    aimDs = sqrtf(powf(px - ax, 2) + powf(py - ay, 2));
+                }
+                g_aimDs = aimDs;
+                if (aimDs > g_Aim.fov && g_Target.screenDist > g_Aim.fov) continue;
+
+                // ===== 角度写 Q3/Q4/Q5 =====
                 float dx = aim.X-start.X, dy = aim.Y-start.Y, dz = aim.Z-start.Z;
                 float hyp = sqrtf(dx*dx + dy*dy);
-                float pitch = atan2f(dz, hyp) * (180.0f/3.14159265f);
-                float yaw   = atan2f(dy, dx)  * (180.0f/3.14159265f);
+                Vector3A rot;
+                rot.X = atan2f(dz, hyp) * (180.0f/3.14159265f);
+                if (rot.X < -75.0f) rot.X = -75.0f;
+                if (rot.X >  75.0f) rot.X =  75.0f;
+                rot.Y = atan2f(dy, dx) * (180.0f/3.14159265f);
+                while (rot.Y < -180.0f) rot.Y += 360.0f;
+                while (rot.Y >  180.0f) rot.Y -= 360.0f;
+                rot.Z = 0;
 
-                if (g_Aim.regRot == 0)      { PackQ(rec.q0, pitch, yaw, 0); PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q0, PARADISE_BP_OP_WRITE); }
-                else if (g_Aim.regRot == 1) { PackQ(rec.q1, pitch, yaw, 0); PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q1, PARADISE_BP_OP_WRITE); }
-                else { float rot[3] = {pitch, yaw, 0}; driver->write((uintptr_t)rec.x2, rot, sizeof(rot)); }
-
+                PackHFA(rec, 3, rot);
+                PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q3, PARADISE_BP_OP_WRITE);
+                PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q4, PARADISE_BP_OP_WRITE);
+                PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q5, PARADISE_BP_OP_WRITE);
                 driver->hwbp_set_record(0, i, &rec);
             }
             driver->hwbp_clear_records(0);
@@ -155,9 +166,7 @@ void DrawInit() {
     if (libbase <= 0) { printf("libUE4.so 未找到\n"); return; }
     初始化 = true;
     printf("初始化成功! libUE4: %lx, pid: %d\n", libbase, pid);
-    pthread_t t;
-    pthread_create(&t, nullptr, HwbpAimThread, nullptr);
-    pthread_detach(t);
+    pthread_t t; pthread_create(&t, nullptr, HwbpAimThread, nullptr); pthread_detach(t);
 }
 
 void UpdateGameData() {
@@ -184,10 +193,12 @@ void UpdateGameData() {
     memset(matrix, 0, 16);
     driver->read((uintptr_t)Matrix, matrix, 16 * 4);
 
+    g_isFiring = driver->read<int>(MySelf + 0x1830);
+
     long wq1 = driver->read<uint64_t>(MySelf + 0x2608);
-    if (wq1 > 0x10000000 && wq1 < 0x10000000000) {
+    if (PtrOk((uint64_t)wq1)) {
         long wq2 = driver->read<uint64_t>(wq1 + 0x5D8);
-        if (wq2 > 0x10000000 && wq2 < 0x10000000000) {
+        if (PtrOk((uint64_t)wq2)) {
             float bs = driver->read<float>(wq2 + 0x560);
             if (bs > 10000) bs *= 0.01f;
             AimFeedBulletSpeed(bs);
@@ -255,6 +266,21 @@ static void DrawLogoNVG(NVGcontext* vg, float x, float y, float size) {
     static float rotation = 0.0f; rotation += 0.05f;
     DrawHexagonStarNVG(vg, x, y, size, rotation, 1.5f);
 }
+static bool GetWeaponName(long obj, char* out, int outLen) {
+    if (!PtrOk((uint64_t)obj)) return false;
+    int wID = driver->read<int>(obj + 24);
+    long wEntry = driver->read<uint64_t>(driver->read<uint64_t>(类地址 + (wID/0x4000)*0x8) + (wID%0x4000)*0x8);
+    if (!PtrOk((uint64_t)wEntry)) return false;
+    char wName[64] = "";
+    driver->read((uintptr_t)(wEntry + 0xC), wName, 64);
+    char* p = strstr(wName, "Weap");
+    if (!p) p = strstr(wName, "BP_");
+    if (!p) p = strstr(wName, "Gun");
+    if (!p) return false;
+    strncpy(out, p, outLen - 1); out[outLen-1] = 0;
+    char* us = strstr(out, "_C"); if (us) *us = 0;
+    return out[0] != 0;
+}
 
 void DrawPlayerNVG(NVGcontext* vg) {
     if (!初始化 || MySelf == 0 || vg == nullptr) return;
@@ -296,7 +322,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
             else if (strstr(ClassName,"Horse")) vname="马"; else if (strstr(ClassName,"Bike")) vname="自行车";
             if (vname) {
                 long int vptr = driver->read<uint64_t>(Objaddr + 0x208);
-                if (vptr > 0x10000000 && vptr < 0x10000000000) {
+                if (PtrOk((uint64_t)vptr)) {
                     Vector3A V; driver->read((uintptr_t)(vptr + 0x1c8), &V, sizeof(V));
                     float vc = matrix[3]*V.X + matrix[7]*V.Y + matrix[11]*V.Z + matrix[15];
                     if (vc > 0.001f) {
@@ -348,7 +374,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float r_y = py - (matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z-5)+matrix[13])/camera*py;
         float r_w = py - (matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z+205)+matrix[13])/camera*py;
         float W = (r_y - r_w) / 2;
-        if (W <= 0) continue;
+        if (W <= 0 || W > 3000) continue;
         float MIDDLE = r_x, TOP_FALLBACK = r_y - W, BOTTOM_FALLBACK = r_y + W;
 
         Vector2A Head, Chest, Pelvis, Left_Shoulder, Right_Shoulder, Left_Elbow, Right_Elbow,
@@ -356,12 +382,12 @@ void DrawPlayerNVG(NVGcontext* vg) {
         bool bonesOk = false;
         Vector3A wHeadW, wChestW, wPelvisW;
 
-        if (DrawIo[4]) {
+        if (DrawIo[4] || g_Aim.enable) {
             long int Mesh = driver->read<uint64_t>(Objaddr + 0x510);
-            if (Mesh > 0x10000000 && Mesh < 0x10000000000) {
+            if (PtrOk((uint64_t)Mesh)) {
                 long int boneArrayPtr = driver->read<uint64_t>(Mesh + 0x9a8);
                 int BoneCount = driver->read<int>(Mesh + 0x9a8 + 8);
-                if (boneArrayPtr > 0x10000000 && boneArrayPtr < 0x10000000000 && BoneCount > 0 && BoneCount < 200) {
+                if (PtrOk((uint64_t)boneArrayPtr) && BoneCount > 0 && BoneCount < 200) {
                     int idx_head=5, idx_chest=4, idx_pelvis=0;
                     int idx_lsh, idx_rsh, idx_lelb, idx_relb, idx_lw, idx_rw, idx_lth, idx_rth, idx_lk, idx_rk, idx_la, idx_ra;
                     if (isDog) { idx_lsh=7; idx_rsh=11; idx_lelb=8; idx_relb=12; idx_lw=9; idx_rw=13; idx_lth=14; idx_rth=18; idx_lk=15; idx_rk=19; idx_la=16; idx_ra=20; }
@@ -408,14 +434,13 @@ void DrawPlayerNVG(NVGcontext* vg) {
                             bc.p[9]=Left_Thigh; bc.p[10]=Right_Thigh; bc.p[11]=Left_Knee; bc.p[12]=Right_Knee;
                             bc.p[13]=Left_Ankle; bc.p[14]=Right_Ankle;
 
-                            // 喂追锁目标
                             Vector2A partSc = (g_Aim.part==0)?Head:((g_Aim.part==1)?Chest:Pelvis);
                             Vector3A partW = (g_Aim.part==0)?wHeadW:((g_Aim.part==1)?wChestW:wPelvisW);
                             float sd = sqrtf(powf(partSc.X-px,2)+powf(partSc.Y-py,2));
                             if (sd < g_Aim.fov) {
                                 Vector3A vel; memset(&vel,0,sizeof(vel));
                                 long vp = driver->read<uint64_t>(Objaddr + 0x208);
-                                if (vp > 0x10000000 && vp < 0x10000000000) driver->read(vp + 0x2C0, &vel, sizeof(vel));
+                                if (PtrOk((uint64_t)vp)) driver->read(vp + 0x2C0, &vel, sizeof(vel));
                                 AimFeedTarget(partW, vel, sd);
                             }
                         }
@@ -436,17 +461,21 @@ void DrawPlayerNVG(NVGcontext* vg) {
 
         float headX = (bonesOk&&Head.X>0)?Head.X:MIDDLE;
         float headY = (bonesOk&&Head.Y>0)?Head.Y:TOP_FALLBACK;
+        bool inView = headX > 0 && headX < (float)abs_ScreenX && headY > 0 && headY < (float)abs_ScreenY;
+
         float left = headX - W*0.6f, right = headX + W*0.6f;
         float top = (bonesOk&&Head.Y>0)?(Head.Y - W/5.0f):TOP_FALLBACK;
         float bottom = (bonesOk)?((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y+W/10.0f:Left_Ankle.Y+W/10.0f):BOTTOM_FALLBACK;
 
         NVGcolor COL_WHITE = nvgRGBA(255,255,255,255), COL_BLACK = nvgRGBA(0,0,0,255);
 
+        if (DrawIo[3]) DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,headX,top,COL_WHITE,1.0f);
+        if (!inView) continue;
+
         if (DrawIo[1]) {
             DrawLineNVG(vg,left,top,right,top,COL_WHITE,1.5f); DrawLineNVG(vg,right,top,right,bottom,COL_WHITE,1.5f);
             DrawLineNVG(vg,right,bottom,left,bottom,COL_WHITE,1.5f); DrawLineNVG(vg,left,bottom,left,top,COL_WHITE,1.5f);
         }
-        if (DrawIo[3]) DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,headX,top,COL_WHITE,1.0f);
         if (DrawIo[4] && bonesOk) {
             nvgBeginPath(vg); nvgCircle(vg,Head.X,Head.Y,W/5.0f);
             nvgStrokeColor(vg,COL_WHITE); nvgStrokeWidth(vg,1.5f); nvgStroke(vg);
@@ -479,24 +508,27 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawOutlinedTextNVG(vg, g_font_agency, tagBuf, {headX, yPos}, 18.0f, COL_WHITE, COL_BLACK, true, 1.0f);
         }
         if (DrawIo[9]) {
-            long int wq1 = driver->read<uint64_t>(Objaddr + 0x2608);
-            if (wq1 > 0x10000000 && wq1 < 0x10000000000) {
-                long int wq2 = driver->read<uint64_t>(wq1 + 0x5D8);
-                if (wq2 > 0x10000000 && wq2 < 0x10000000000) {
-                    int wID = driver->read<int>(wq2 + 24);
-                    long wEntry = driver->read<uint64_t>(driver->read<uint64_t>(类地址 + (wID/0x4000)*0x8) + (wID%0x4000)*0x8);
-                    char wName[64] = "";
-                    driver->read((uintptr_t)(wEntry + 0xC), wName, 64);
-                    char* p = strstr(wName, "Weap");
-                    if (p) {
-                        char clean[48]; strncpy(clean, p+4, sizeof(clean)-1); clean[sizeof(clean)-1]=0;
-                        char* us = strstr(clean, "_"); if (us) *us = 0;
-                        if (clean[0]) {
-                            float wy = top - 44; if (wy < 0) wy = 0;
-                            DrawOutlinedTextNVG(vg, g_font_agency, clean, {headX, wy}, 16.0f, COL_WHITE, COL_BLACK, true, 1.0f);
-                        }
+            char clean[48] = "";
+            long wq1 = driver->read<uint64_t>(Objaddr + 0x2608);
+            if (PtrOk((uint64_t)wq1)) {
+                long wq2 = driver->read<uint64_t>(wq1 + 0x5D8);
+                long cands[3] = {0,0,0};
+                if (PtrOk((uint64_t)wq2)) {
+                    cands[0] = wq2;
+                    cands[1] = driver->read<uint64_t>(wq2 + 0x1e0);
+                    long ent = driver->read<uint64_t>(wq1 + 0x1370);
+                    if (PtrOk((uint64_t)ent)) {
+                        long cw = driver->read<uint64_t>(ent + 0x5D8);
+                        if (PtrOk((uint64_t)cw)) cands[2] = driver->read<uint64_t>(cw + 0x1e0);
                     }
                 }
+                for (int c = 0; c < 3 && !clean[0]; c++) {
+                    if (PtrOk((uint64_t)cands[c])) GetWeaponName(cands[c], clean, sizeof(clean));
+                }
+            }
+            if (clean[0]) {
+                float wy = top - 44; if (wy < 0) wy = 0;
+                DrawOutlinedTextNVG(vg, g_font_agency, clean, {headX, wy}, 16.0f, COL_WHITE, COL_BLACK, true, 1.0f);
             }
         }
         if (DrawIo[7]) {
@@ -523,11 +555,34 @@ void DrawCanvas() {
     if (!vg) return;
     nvgBeginFrame(vg, (float)abs_ScreenX, (float)abs_ScreenY, 1.0f);
     float cx = (float)abs_ScreenX * 0.5f;
+
     DrawPlayerNVG(vg);
+
+    if (g_fovCircle && g_Aim.enable) {
+        float r = g_Aim.fov;
+        if (g_Aim.dynFov && g_isFiring && g_Target.valid && g_aimDs < 1e8f) r = g_aimDs;
+        if (r < 20.0f) r = 20.0f;
+        nvgBeginPath(vg);
+        nvgCircle(vg, px, py, r);
+        nvgStrokeColor(vg, nvgRGBA(255, 140, 0, 255));
+        nvgStrokeWidth(vg, 2.0f);
+        nvgStroke(vg);
+    }
+
     DrawLogoNVG(vg, (float)abs_ScreenX/4.0f, (float)abs_ScreenY/10.0f, 35.0f);
-    DrawSoftTextNVG(vg, g_font_agency, "Asuka追锁 @Asuka1314", {cx, 60.0f*UI_SCALE()}, 40.0f, nvgRGBA(255,255,255,255), true);
-    char infoBuf[64]; snprintf(infoBuf, sizeof(infoBuf), "真人: %d  人机: %d", RealCount, BotCount);
-    DrawSoftTextNVG(vg, g_font_agency, infoBuf, {cx, 105.0f*UI_SCALE()}, 24.0f, nvgRGBA(255,255,255,255), true);
+
+    if (g_titleOutline) {
+        DrawOutlinedTextNVG(vg, g_font_agency, "Asuka追踪 @Asuka1314", {cx, 40.0f*UI_SCALE()}, 40.0f*UI_SCALE(),
+                            nvgRGBA(255,255,255,255), nvgRGBA(0,0,0,255), true, 2.0f);
+        char infoBuf[64]; snprintf(infoBuf, sizeof(infoBuf), "真人: %d  人机: %d", RealCount, BotCount);
+        DrawOutlinedTextNVG(vg, g_font_agency, infoBuf, {cx, 92.0f*UI_SCALE()}, 24.0f*UI_SCALE(),
+                            nvgRGBA(255,255,255,255), nvgRGBA(0,0,0,255), true, 2.0f);
+    } else {
+        DrawSoftTextNVG(vg, g_font_agency, "Asuka追踪 @Asuka1314", {cx, 60.0f*UI_SCALE()}, 40.0f, nvgRGBA(255,255,255,255), true);
+        char infoBuf[64]; snprintf(infoBuf, sizeof(infoBuf), "真人: %d  人机: %d", RealCount, BotCount);
+        DrawSoftTextNVG(vg, g_font_agency, infoBuf, {cx, 105.0f*UI_SCALE()}, 24.0f, nvgRGBA(255,255,255,255), true);
+    }
+
     nvgEndFrame(vg);
 }
 
@@ -561,42 +616,26 @@ void Layout_tick_UI(bool* main_thread_flag) {
                 ImGui::Checkbox("忽略人机", &忽略人机);
                 ImGui::Checkbox("显示载具", &DrawIo[8]); ImGui::SameLine(0,40);
                 ImGui::Checkbox("显示手持", &DrawIo[9]);
+                ImGui::Checkbox("标题描边", &g_titleOutline);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("追锁")) {
+            if (ImGui::BeginTabItem("追踪")) {
                 ImGui::Checkbox("启用断点追锁", &g_Aim.enable);
-                ImGui::SameLine(0,20);
-                ImGui::Combo("模式", &g_Aim.mode, "角度追踪\0坐标追踪\0寄存器转储\0");
-                ImGui::Combo("部位", &g_Aim.part, "头部\0胸部\0盆骨\0");
-                ImGui::SameLine(0,20);
-                ImGui::Combo("触发", &g_Aim.trigger, "总是\0开火\0开镜\0");
-                ImGui::SliderFloat("FOV", &g_Aim.fov, 50.0f, 800.0f, "%.0f");
+                ImGui::SameLine(); ImGui::Checkbox("FOV圈", &g_fovCircle);
+                ImGui::SameLine(); ImGui::Checkbox("动态圈", &g_Aim.dynFov);
+                ImGui::SetNextItemWidth(110); ImGui::Combo("部位", &g_Aim.part, "头\0胸\0盆骨\0");
+                ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::Combo("触发", &g_Aim.trigger, "总是\0开火\0开镜\0");
                 ImGui::Checkbox("预判", &g_Aim.predict);
-                ImGui::SameLine(0,20);
-                ImGui::Checkbox("下坠", &g_Aim.drop);
-                ImGui::Checkbox("概率模式", &g_Aim.prob);
-                if (g_Aim.prob) { ImGui::SameLine(0,20); ImGui::SliderFloat("命中率", &g_Aim.probRate, 0.05f, 1.0f, "%.2f"); }
-                ImGui::Separator();
-                ImGui::Text("寄存器适配:");
-                ImGui::Combo("StartLoc", &g_Aim.regLoc, "Q0\0Q1\0X1指针\0");
-                ImGui::SameLine(0,20);
-                ImGui::Combo("StartRot", &g_Aim.regRot, "Q0\0Q1\0X2指针\0");
-                if (g_Aim.mode == 2) {
-                    ImGui::Separator();
-                    ImGui::Text("转储(#%llu):", (unsigned long long)g_Dump.hits);
-                    ImGui::Text("X0=%llx X1=%llx", (unsigned long long)g_Dump.x0, (unsigned long long)g_Dump.x1);
-                    ImGui::Text("X2=%llx X3=%llx", (unsigned long long)g_Dump.x2, (unsigned long long)g_Dump.x3);
-                    ImGui::Text("Q0=%.1f,%.1f,%.1f", g_Dump.q0[0], g_Dump.q0[1], g_Dump.q0[2]);
-                    ImGui::Text("Q1=%.1f,%.1f,%.1f", g_Dump.q1[0], g_Dump.q1[1], g_Dump.q1[2]);
-                    ImGui::Text("Q2=%.1f,%.1f,%.1f", g_Dump.q2[0], g_Dump.q2[1], g_Dump.q2[2]);
-                }
-                ImGui::Separator();
-                ImGui::Text("状态:");
-                ImGui::BulletText("断点: %s", g_bpSet ? "已设置" : "未设置");
-                ImGui::BulletText("触发: %llu", (unsigned long long)g_bpHits);
-                ImGui::BulletText("目标: %s", g_Target.valid ? "有" : "无");
-                ImGui::BulletText("初速: %.0f", g_BulletSpeed);
-                if (g_bpSet && ImGui::Button("移除断点")) { driver->hwbp_remove(); g_bpSet = false; }
+                if (g_Aim.predict) { ImGui::SameLine(); ImGui::SetNextItemWidth(90); ImGui::SliderFloat("##预判强度", &g_Aim.predScale, 0.0f, 3.0f, "%.2f"); }
+                ImGui::SetNextItemWidth(120); ImGui::SliderFloat("下坠系数", &g_Aim.dropCoef, 0.0f, 1200.0f, "%.0f");
+                ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::SliderFloat("压枪", &g_Aim.recoilComp, 0.0f, 20.0f, "%.1f");
+                ImGui::Checkbox("概率", &g_Aim.prob);
+                if (g_Aim.prob) { ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::SliderFloat("##率", &g_Aim.probRate, 0.05f, 1.0f, "%.2f"); }
+                ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("FOV", &g_Aim.fov, 50.0f, 800.0f, "%.0f");
+                ImGui::Text("断点:%s 触发:%llu 目标:%s 速:%.0f 落点屏距:%.0f",
+                    g_bpSet ? "是" : "否", (unsigned long long)g_bpHits,
+                    g_Target.valid ? "有" : "无", g_BulletSpeed, g_aimDs);
+                if (g_bpSet) { ImGui::SameLine(); if (ImGui::Button("移除")) { driver->hwbp_remove(); g_bpSet = false; } }
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
