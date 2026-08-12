@@ -37,9 +37,6 @@ static VideoFramePlayer g_video;
 static bool   g_videoInited = false;
 static bool   g_showMenu    = false;
 static ImVec2 g_videoPos    = ImVec2(80, 300);
-static bool   g_videoDown   = false;
-static float  g_videoMove   = 0;
-static ImVec2 g_videoGrab   = ImVec2(0, 0);
 
 static struct {
     bool enable = false;
@@ -80,21 +77,7 @@ static void AimFeedTarget(const Vector3A& pos, const Vector3A& vel, float sd) {
 static void AimFeedBulletSpeed(float v) { if (v > 50.0f) g_BulletSpeed = v; }
 static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
 
-// ==================== 视频悬浮窗 ====================
-static void VideoTapDrag() {
-    ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsItemHovered() && io.MouseDown[0]) {
-        if (!g_videoDown) { g_videoDown = true; g_videoMove = 0;
-            g_videoGrab = ImVec2(io.MousePos.x - g_videoPos.x, io.MousePos.y - g_videoPos.y); }
-        g_videoPos.x = io.MousePos.x - g_videoGrab.x;
-        g_videoPos.y = io.MousePos.y - g_videoGrab.y;
-        g_videoMove += fabsf(io.MouseDelta.x) + fabsf(io.MouseDelta.y);
-    }
-    if (g_videoDown && !io.MouseDown[0]) {
-        g_videoDown = false;
-        if (g_videoMove < 12.0f) g_showMenu = !g_showMenu;
-    }
-}
+// ==================== 视频悬浮窗（边沿检测+防抖，不闪）====================
 static void VideoBallUI() {
     if (!g_videoInited) {
         g_video.SetUploader([](const unsigned char* p, int w, int h, int) -> ImTextureID {
@@ -110,44 +93,64 @@ static void VideoBallUI() {
         });
         g_videoInited = g_video.Init(VIDEO_RAW_PATH, VIDEO_META_PATH);
     }
-    ImGui::SetNextWindowPos(g_videoPos, ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
-    const ImGuiWindowFlags FL = ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|
-        ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoSavedSettings|
-        ImGuiWindowFlags_NoBackground|ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoNav;
+    static bool  prevDown = false, holding = false, dragging = false;
+    static float downX = 0, downY = 0;
+    static double lastToggle = 0;
+    ImGuiIO& io = ImGui::GetIO();
+
+    float bw = 96, bh = 96;
+    ImTextureID tex = 0;
     if (g_videoInited) {
         g_video.Update();
-        ImTextureID tex = g_video.GetCurrentTexture();
-        const VideoMeta& m = g_video.GetMeta();
-        if (tex) {
-            ImGui::SetNextWindowSize(ImVec2((float)m.width, (float)m.height));
-            ImGui::Begin("##VideoBall", nullptr, FL);
-            ImGui::Image(tex, ImVec2((float)m.width, (float)m.height));
-            VideoTapDrag();
-            ImGui::End();
-            ImGui::PopStyleVar(); ImGui::PopStyleColor();
-            return;
-        }
+        tex = g_video.GetCurrentTexture();
+        if (tex) { const VideoMeta& m = g_video.GetMeta(); bw = (float)m.width; bh = (float)m.height; }
     }
-    ImGui::SetNextWindowSize(ImVec2(96,96));
-    ImGui::Begin("##VideoBall", nullptr, FL);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 c = ImGui::GetWindowPos(); c.x += 48; c.y += 48;
-    dl->AddCircleFilled(c, 43.0f, IM_COL32(15,15,20,200));
-    static float rot = 0; rot += 0.02f;
-    for (int k = 0; k < 2; k++) {
-        ImVec2 tri[3];
-        for (int i = 0; i < 3; i++) {
-            float a = rot + (k*60 + i*120) * 3.14159265f/180.0f;
-            tri[i] = ImVec2(c.x + 38*cosf(a), c.y + 38*sinf(a));
+
+    ImGui::SetNextWindowPos(g_videoPos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(bw, bh));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0,0,0,0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0,0));
+    ImGui::Begin("##VideoBall", nullptr,
+        ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoScrollbar|
+        ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoBackground|
+        ImGuiWindowFlags_NoFocusOnAppearing|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    if (tex) {
+        ImGui::Image(tex, ImVec2(bw, bh));
+    } else {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 c = ImGui::GetWindowPos(); c.x += bw*0.5f; c.y += bh*0.5f;
+        dl->AddCircleFilled(c, 43.0f, IM_COL32(15,15,20,200));
+        static float rot = 0; rot += 0.02f;
+        for (int k = 0; k < 2; k++) {
+            ImVec2 tri[3];
+            for (int i = 0; i < 3; i++) {
+                float a = rot + (k*60 + i*120) * 3.14159265f/180.0f;
+                tri[i] = ImVec2(c.x + 38*cosf(a), c.y + 38*sinf(a));
+            }
+            dl->AddTriangle(tri[0], tri[1], tri[2], IM_COL32(255,255,255,230), 1.5f);
         }
-        dl->AddTriangle(tri[0], tri[1], tri[2], IM_COL32(255,255,255,230), 1.5f);
+        ImGui::Dummy(ImVec2(bw, bh));
     }
-    ImGui::Dummy(ImVec2(96,96));
-    VideoTapDrag();
+
+    // 触摸状态机：按下边沿记录 / 超阈值=拖 / 抬手且没拖+防抖=点
+    bool down = io.MouseDown[0];
+    bool hov  = ImGui::IsItemHovered();
+    if (down && !prevDown && hov) { holding = true; dragging = false; downX = io.MousePos.x; downY = io.MousePos.y; }
+    if (holding && down) {
+        if (fabsf(io.MousePos.x-downX) + fabsf(io.MousePos.y-downY) > 12.0f) dragging = true;
+        if (dragging) { g_videoPos.x += io.MouseDelta.x; g_videoPos.y += io.MouseDelta.y; }
+    }
+    if (!down && prevDown && holding) {
+        holding = false;
+        if (!dragging && (ImGui::GetTime() - lastToggle) > 0.35) { g_showMenu = !g_showMenu; lastToggle = ImGui::GetTime(); }
+        dragging = false;
+    }
+    prevDown = down;
+
     ImGui::End();
-    ImGui::PopStyleVar(); ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 // ==================== 追锁线程 ====================
@@ -530,11 +533,10 @@ void DrawPlayerNVG(NVGcontext* vg) {
             float CurHP = 当前血量, MaxHP = 最大血量;
             if (MaxHP <= 0) MaxHP = 100.0f;
             if (CurHP < 0) CurHP = 0; if (CurHP > MaxHP) CurHP = MaxHP;
-            float hp_ratio = CurHP / MaxHP;
-            int hp_percent = (int)(hp_ratio * 100);
+            int hp_percent = (int)(CurHP / MaxHP * 100);
             float cx2 = headX, cy2 = top - 70.0f;
             nvgBeginPath(vg);
-            nvgArc(vg, cx2, cy2, 24.0f, -NVG_PI/2.0f, -NVG_PI/2.0f + 2.0f*NVG_PI*hp_ratio, NVG_CW);
+            nvgArc(vg, cx2, cy2, 24.0f, -NVG_PI/2.0f, -NVG_PI/2.0f + 2.0f*NVG_PI*(CurHP/MaxHP), NVG_CW);
             nvgStrokeColor(vg, COL_WHITE); nvgStrokeWidth(vg, 4.0f); nvgLineCap(vg, NVG_ROUND); nvgStroke(vg);
             char hpBuf[8]; snprintf(hpBuf, sizeof(hpBuf), "%d%%", hp_percent);
             DrawOutlinedTextNVG(vg, g_font_agency, hpBuf, {cx2, cy2-6.0f}, 13.0f, COL_WHITE, COL_BLACK, true, 1.0f);
@@ -605,9 +607,7 @@ void DrawCanvas() {
 
 void Layout_tick_UI(bool* main_thread_flag) {
     UpdateGameData();
-    VideoBallUI();
-    if (!g_showMenu) return;
-    {
+    if (g_showMenu) {
         static int style_idx = 0;
         char title[64];
         snprintf(title, sizeof(title), "Asuka追锁 ~%.1f FPS", ImGui::GetIO().Framerate);
@@ -687,4 +687,5 @@ void Layout_tick_UI(bool* main_thread_flag) {
         g_window = ImGui::GetCurrentWindow();
         ImGui::End();
     }
+    VideoBallUI();   // 最后画 = 永远置顶
 }
