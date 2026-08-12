@@ -36,6 +36,7 @@ static volatile float g_aimDs = 0;
 static VideoFramePlayer g_video;
 static bool   g_videoInited = false;
 static bool   g_showMenu    = false;
+static float  g_videoScale  = 0.6f;
 static ImVec2 g_videoPos    = ImVec2(80, 300);
 
 static struct {
@@ -77,7 +78,7 @@ static void AimFeedTarget(const Vector3A& pos, const Vector3A& vel, float sd) {
 static void AimFeedBulletSpeed(float v) { if (v > 50.0f) g_BulletSpeed = v; }
 static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
 
-// ==================== 视频悬浮窗（边沿检测+防抖，不闪）====================
+// ==================== 视频悬浮窗（防闪+缩放）====================
 static void VideoBallUI() {
     if (!g_videoInited) {
         g_video.SetUploader([](const unsigned char* p, int w, int h, int) -> ImTextureID {
@@ -103,7 +104,7 @@ static void VideoBallUI() {
     if (g_videoInited) {
         g_video.Update();
         tex = g_video.GetCurrentTexture();
-        if (tex) { const VideoMeta& m = g_video.GetMeta(); bw = (float)m.width; bh = (float)m.height; }
+        if (tex) { const VideoMeta& m = g_video.GetMeta(); bw = (float)m.width * g_videoScale; bh = (float)m.height * g_videoScale; }
     }
 
     ImGui::SetNextWindowPos(g_videoPos, ImGuiCond_Always);
@@ -133,7 +134,6 @@ static void VideoBallUI() {
         ImGui::Dummy(ImVec2(bw, bh));
     }
 
-    // 触摸状态机：按下边沿记录 / 超阈值=拖 / 抬手且没拖+防抖=点
     bool down = io.MouseDown[0];
     bool hov  = ImGui::IsItemHovered();
     if (down && !prevDown && hov) { holding = true; dragging = false; downX = io.MousePos.x; downY = io.MousePos.y; }
@@ -610,7 +610,7 @@ void Layout_tick_UI(bool* main_thread_flag) {
     if (g_showMenu) {
         static int style_idx = 0;
         char title[64];
-        snprintf(title, sizeof(title), "Asuka追锁 ~%.1f FPS", ImGui::GetIO().Framerate);
+        snprintf(title, sizeof(title), "Asuka追锁 ~%.1f FPS###AsukaMenu", ImGui::GetIO().Framerate);
         ImGui::Begin(title, main_thread_flag);
         if (::permeate_record_ini) {
             ImGui::SetWindowPos({LastCoordinate.Pos_x, LastCoordinate.Pos_y});
@@ -670,6 +670,7 @@ void Layout_tick_UI(bool* main_thread_flag) {
                 ::permeate_record_ini = true;
                 g_video.Shutdown(); g_videoInited = false;
             }
+            ImGui::SliderFloat("视频大小", &g_videoScale, 0.3f, 1.0f, "%.2f");
             ImGui::Separator();
             ImGui::Text("断点:%s 触发:%llu 目标:%s 速:%.0f",
                 g_bpSet ? "是" : "否", (unsigned long long)g_bpHits,
@@ -677,6 +678,8 @@ void Layout_tick_UI(bool* main_thread_flag) {
             if (g_bpSet) { ImGui::SameLine(); if (ImGui::Button("移除")) { driver->hwbp_remove(); g_bpSet = false; } }
             ImGui::Separator();
             if (ImGui::Button("隐藏菜单")) g_showMenu = false;
+            ImGui::SameLine();
+            if (ImGui::Button("安全退出")) { driver->hwbp_remove(); exit(0); }
         }
         ImGui::SliderFloat("刷新帧率调节", &FPS, 60.0f, 144.0f, "%.2f", 3);
         ImGui::BulletText("进程:%d", pid);
