@@ -1,4 +1,4 @@
-// src/Android_draw/draw_Gui.cpp —— 坐标0x1c0修正版
+// src/Android_draw/draw_Gui.cpp —— 坐标0x1c8修正版
 #include "draw.h"
 #include "My_font/zh_Font.h"
 #include "读写.h"
@@ -341,56 +341,52 @@ static bool GetWeaponName(long obj,char* out,int outLen){
 }
 
 void DrawPlayerNVG(NVGcontext* vg) {
-    if (!初始化 || MySelf==0 || vg==nullptr) return;
-    auto onScreen=[&](const Vector2A& p){return p.X>0&&p.Y>0&&p.X<(float)abs_ScreenX&&p.Y<(float)abs_ScreenY;};
-    int 自己队伍=driver->read<int>(MySelf+0x998);
-
-    // ★ 坐标内层偏移 = 0x1c0（数据.h 坐标指针2 / main.cpp 0x1C0）
-    Vector3A Z; driver->read((uintptr_t)(driver->read<uint64_t>(MySelf+0x208)+0x1c0), &Z, sizeof(Z));
-    if (PosOk(Z)) g_lastZ = Z; else Z = g_lastZ;
-
-    PlayerCount=0; RealCount=0; BotCount=0;
+    if (!初始化 || MySelf == 0 || vg == nullptr) return;
+    auto onScreen = [&](const Vector2A& p) { return p.X>0 && p.Y>0 && p.X<(float)abs_ScreenX && p.Y<(float)abs_ScreenY; };
+    int 自己队伍 = driver->read<int>(MySelf + 0x998);
+    Vector3A Z;
+    driver->read((uintptr_t)(driver->read<uint64_t>(MySelf + 0x208) + 0x1c8), &Z, sizeof(Z));
+    PlayerCount = 0; RealCount = 0; BotCount = 0;
     AimFrameBegin();
-    for (int i=0;i<Count;i++){
-        long int Objaddr=driver->read<uint64_t>(Arrayaddr+0x8*i);
-        if(Objaddr<=0xffff||Objaddr==0||Objaddr<=0x10000000||Objaddr%4!=0||Objaddr>=0x10000000000)continue;
-        if(MySelf==Objaddr)continue;
-        int ClassID=driver->read<int>(Objaddr+24);
-        long FNameEntry=driver->read<uint64_t>(driver->read<uint64_t>(类地址+(ClassID/0x4000)*0x8)+(ClassID%0x4000)*0x8);
-        char ClassName[64]=""; driver->read((uintptr_t)(FNameEntry+0xC),ClassName,64);
-        if(strstr(ClassName,"BPPawn_Escape_Raven")!=0||strstr(ClassName,"BPPawn_Escape_UAV_C")!=0)continue;
-
+    for (int i = 0; i < Count; i++) {
+        long int Objaddr = driver->read<uint64_t>(Arrayaddr + 0x8 * i);
+        if (Objaddr <= 0xffff || Objaddr == 0 || Objaddr <= 0x10000000 || Objaddr % 4 != 0 || Objaddr >= 0x10000000000) continue;
+        if (MySelf == Objaddr) continue;
+        int ClassID = driver->read<int>(Objaddr + 24);
+        long FNameEntry = driver->read<uint64_t>(driver->read<uint64_t>(类地址 + (ClassID/0x4000)*0x8) + (ClassID%0x4000)*0x8);
+        char ClassName[64] = "";
+        driver->read((uintptr_t)(FNameEntry + 0xC), ClassName, 64);
+        if (strstr(ClassName, "BPPawn_Escape_Raven") != 0 || strstr(ClassName, "BPPawn_Escape_UAV_C") != 0) continue;
         if (DrawIo[8]) {
-            const char* vname=NULL;
-            if(strstr(ClassName,"UAZ"))vname="吉普车"; else if(strstr(ClassName,"Dacia"))vname="轿车";
-            else if(strstr(ClassName,"Buggy"))vname="蹦蹦车"; else if(strstr(ClassName,"Mirado"))vname="跑车";
-            else if(strstr(ClassName,"Rony"))vname="越野皮卡"; else if(strstr(ClassName,"PickUp"))vname="皮卡车";
-            else if(strstr(ClassName,"MiniBus"))vname="迷你巴士"; else if(strstr(ClassName,"PG117"))vname="快艇";
-            else if(strstr(ClassName,"AquaRail"))vname="摩托艇"; else if(strstr(ClassName,"VH_Motorcycle"))vname="摩托车";
-            else if(strstr(ClassName,"VH_Snowmobile")||strstr(ClassName,"VH_Snowbike"))vname="雪地摩托";
-            else if(strstr(ClassName,"VH_Scooter")||strstr(ClassName,"Scooter"))vname="踏板车";
-            else if(strstr(ClassName,"VH_ATV1"))vname="地形车"; else if(strstr(ClassName,"VH_UTV"))vname="UTV";
-            else if(strstr(ClassName,"VH_BRDM"))vname="装甲车"; else if(strstr(ClassName,"VH_4SportCar"))vname="敞篷跑车";
-            else if(strstr(ClassName,"_CoupeRB_"))vname="双人跑车"; else if(strstr(ClassName,"Bigfoot"))vname="大脚车";
-            else if(strstr(ClassName,"TrackVehicle"))vname="地铁矿车"; else if(strstr(ClassName,"BP_VH_Tuk_"))vname="三轮摩托";
-            else if(strstr(ClassName,"LadaNiva"))vname="雪地越野车"; else if(strstr(ClassName,"AirDropPlane"))vname="空投飞机";
-            else if(strstr(ClassName,"VH_Motorglider")||strstr(ClassName,"wing_"))vname="飞行器";
-            else if(strstr(ClassName,"Horse"))vname="马"; else if(strstr(ClassName,"Bike"))vname="自行车";
-            if(vname){
-                long int vptr=driver->read<uint64_t>(Objaddr+0x208);
-                if(PtrOk((uint64_t)vptr)){
-                    Vector3A V; driver->read((uintptr_t)(vptr+0x1c0),&V,sizeof(V));   // ★ 0x1c0
-                    if (PosOk(V)) {
-                        float vc=matrix[3]*V.X+matrix[7]*V.Y+matrix[11]*V.Z+matrix[15];
-                        if(vc>0.001f){
-                            float vDist=sqrt(pow(V.X-Z.X,2)+pow(V.Y-Z.Y,2)+pow(V.Z-Z.Z,2))*0.01f;
-                            if(vDist<=400){
-                                float vx=px+(matrix[0]*V.X+matrix[4]*V.Y+matrix[8]*V.Z+matrix[12])/vc*px;
-                                float vy=py-(matrix[1]*V.X+matrix[5]*V.Y+matrix[9]*V.Z+matrix[13])/vc*py;
-                                if(vx>0&&vx<(float)abs_ScreenX&&vy>0&&vy<(float)abs_ScreenY){
-                                    char vbuf[64]; snprintf(vbuf,sizeof(vbuf),"%s [%dm]",vname,(int)vDist);
-                                    DrawOutlinedTextNVG(vg,g_font_agency,vbuf,{vx,vy-20},20.0f,nvgRGBA(255,255,0,255),nvgRGBA(0,0,0,255),true,1.0f);
-                                }
+            const char* vname = NULL;
+            if (strstr(ClassName,"UAZ")) vname="吉普车"; else if (strstr(ClassName,"Dacia")) vname="轿车";
+            else if (strstr(ClassName,"Buggy")) vname="蹦蹦车"; else if (strstr(ClassName,"Mirado")) vname="跑车";
+            else if (strstr(ClassName,"Rony")) vname="越野皮卡"; else if (strstr(ClassName,"PickUp")) vname="皮卡车";
+            else if (strstr(ClassName,"MiniBus")) vname="迷你巴士"; else if (strstr(ClassName,"PG117")) vname="快艇";
+            else if (strstr(ClassName,"AquaRail")) vname="摩托艇"; else if (strstr(ClassName,"VH_Motorcycle")) vname="摩托车";
+            else if (strstr(ClassName,"VH_Snowmobile")||strstr(ClassName,"VH_Snowbike")) vname="雪地摩托";
+            else if (strstr(ClassName,"VH_Scooter")||strstr(ClassName,"Scooter")) vname="踏板车";
+            else if (strstr(ClassName,"VH_ATV1")) vname="地形车"; else if (strstr(ClassName,"VH_UTV")) vname="UTV";
+            else if (strstr(ClassName,"VH_BRDM")) vname="装甲车"; else if (strstr(ClassName,"VH_4SportCar")) vname="敞篷跑车";
+            else if (strstr(ClassName,"_CoupeRB_")) vname="双人跑车"; else if (strstr(ClassName,"Bigfoot")) vname="大脚车";
+            else if (strstr(ClassName,"TrackVehicle")) vname="地铁矿车"; else if (strstr(ClassName,"BP_VH_Tuk_")) vname="三轮摩托";
+            else if (strstr(ClassName,"LadaNiva")) vname="雪地越野车"; else if (strstr(ClassName,"AirDropPlane")) vname="空投飞机";
+            else if (strstr(ClassName,"VH_Motorglider")||strstr(ClassName,"wing_")) vname="飞行器";
+            else if (strstr(ClassName,"Horse")) vname="马"; else if (strstr(ClassName,"Bike")) vname="自行车";
+            if (vname) {
+                long int vptr = driver->read<uint64_t>(Objaddr + 0x208);
+                if (PtrOk((uint64_t)vptr)) {
+                    Vector3A V; driver->read((uintptr_t)(vptr + 0x1c8), &V, sizeof(V));
+                    float vc = matrix[3]*V.X + matrix[7]*V.Y + matrix[11]*V.Z + matrix[15];
+                    if (vc > 0.001f) {
+                        float vDist = sqrt(pow(V.X-Z.X,2)+pow(V.Y-Z.Y,2)+pow(V.Z-Z.Z,2)) * 0.01f;
+                        if (vDist <= 400) {
+                            float vx = px + (matrix[0]*V.X+matrix[4]*V.Y+matrix[8]*V.Z+matrix[12])/vc*px;
+                            float vy = py - (matrix[1]*V.X+matrix[5]*V.Y+matrix[9]*V.Z+matrix[13])/vc*py;
+                            if (vx>0 && vx<(float)abs_ScreenX && vy>0 && vy<(float)abs_ScreenY) {
+                                char vbuf[64]; snprintf(vbuf, sizeof(vbuf), "%s [%dm]", vname, (int)vDist);
+                                DrawOutlinedTextNVG(vg, g_font_agency, vbuf, {vx, vy-20}, 20.0f,
+                                    nvgRGBA(255,255,0,255), nvgRGBA(0,0,0,255), true, 1.0f);
                             }
                         }
                     }
@@ -398,67 +394,72 @@ void DrawPlayerNVG(NVGcontext* vg) {
                 continue;
             }
         }
+        float 玩家标志 = driver->read<float>(Objaddr + 0x2b78);
+        bool isDog = (strstr(ClassName, "AIMob_PatrolDog_C") != 0);
+        bool isHunger = (strstr(ClassName, "BPPawn_HungerH_C") != 0) || (strstr(ClassName, "BPPawn_HungerB_C") != 0);
+        if (玩家标志 != 479.5f && !isDog && !isHunger) continue;
+        int 状态 = driver->read<int>(Objaddr + 0x1058);
+        if (状态 == 1048592 || 状态 == 1048576) continue;
+        int 敌人队伍 = driver->read<int>(Objaddr + 0x998);
+        if (敌人队伍 == 自己队伍) continue;
+        int botFlag = driver->read<int>(Objaddr + 0xa59);
+        bool isBot = isDog || isHunger || (敌人队伍 != 0 && (botFlag==16842753 || botFlag==16843009 || botFlag==16843008));
+        if (忽略人机 && isBot) continue;
+        float 当前血量 = driver->read<float>(Objaddr + 0xe60);
+        float 最大血量 = driver->read<float>(Objaddr + 0xe64);
+        if (最大血量 <= 0) continue;
+        PlayerCount++; if (isBot) BotCount++; else RealCount++;
+        Vector3A D;
+        driver->read((uintptr_t)(driver->read<uint64_t>(Objaddr + 0x208) + 0x1c8), &D, sizeof(D));
+        float camera = matrix[3]*D.X + matrix[7]*D.Y + matrix[11]*D.Z + matrix[15];
+        if (camera <= 0.001f) continue;
+        float Distance = sqrt(pow(D.X-Z.X,2)+pow(D.Y-Z.Y,2)+pow(D.Z-Z.Z,2)) * 0.01f;
+        if (Distance > 500 || Distance <= 0) continue;
+        float r_x = px + (matrix[0]*D.X+matrix[4]*D.Y+matrix[8]*D.Z+matrix[12])/camera*px;
+        float r_y = py - (matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z-5)+matrix[13])/camera*py;
+        float r_w = py - (matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z+205)+matrix[13])/camera*py;
+        float W = (r_y - r_w) / 2;
+        if (W <= 0 || W > 3000) continue;
 
-        float 玩家标志=driver->read<float>(Objaddr+0x2b78);
-        bool isDog=(strstr(ClassName,"AIMob_PatrolDog_C")!=0);
-        bool isHunger=(strstr(ClassName,"BPPawn_HungerH_C")!=0)||(strstr(ClassName,"BPPawn_HungerB_C")!=0);
-        if(玩家标志!=479.5f&&!isDog&&!isHunger)continue;
-        int 状态=driver->read<int>(Objaddr+0x1058);
-        if(状态==1048592||状态==1048576)continue;
-        int 敌人队伍=driver->read<int>(Objaddr+0x998);
-        if(敌人队伍==自己队伍)continue;
-        int botFlag=driver->read<int>(Objaddr+0xa59);
-        bool isBot=isDog||isHunger||(敌人队伍!=0&&(botFlag==16842753||botFlag==16843009||botFlag==16843008));
-        if(忽略人机&&isBot)continue;
-        float 当前血量=driver->read<float>(Objaddr+0xe60);
-        float 最大血量=driver->read<float>(Objaddr+0xe64);
-        if(最大血量<=0)continue;
-        PlayerCount++; if(isBot)BotCount++; else RealCount++;
+        // ===== 门控（下坠.cpp思路升级）：身体框与屏幕求相交 =====
+        // 框完全在屏幕外 → 不画；框和屏幕有交集（哪怕只漏半边）→ 画
+        float fLeft = r_x - W*0.6f, fRight = r_x + W*0.6f;
+        float fTop = r_w, fBottom = r_y + W;
+        bool bodyOnScreen = fRight > 0.0f && fLeft < (float)abs_ScreenX &&
+                            fBottom > 0.0f && fTop < (float)abs_ScreenY;
+        if (!bodyOnScreen) continue;   // 屏外：方框/骨骼/射线/信息全不画
 
-        Vector3A D; driver->read((uintptr_t)(driver->read<uint64_t>(Objaddr+0x208)+0x1c0),&D,sizeof(D));   // ★ 0x1c0
-        if(!PosOk(D))continue;
-        float camera=matrix[3]*D.X+matrix[7]*D.Y+matrix[11]*D.Z+matrix[15];
-        if(camera<=0.001f)continue;
-        float Distance=sqrt(pow(D.X-Z.X,2)+pow(D.Y-Z.Y,2)+pow(D.Z-Z.Z,2))*0.01f;
-        if(Distance>500||Distance<=0)continue;
-        float r_x=px+(matrix[0]*D.X+matrix[4]*D.Y+matrix[8]*D.Z+matrix[12])/camera*px;
-        float r_y=py-(matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z-5)+matrix[13])/camera*py;
-        float r_w=py-(matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z+205)+matrix[13])/camera*py;
-        float W=(r_y-r_w)/2;
-        if(W<=0||W>3000)continue;
-        bool bodyInView = r_x > -50.0f && r_x < (float)abs_ScreenX + 50.0f &&
-                          r_y > -50.0f && r_y < (float)abs_ScreenY + 50.0f;
-        float MIDDLE=r_x, TOP_FALLBACK=r_y-W, BOTTOM_FALLBACK=r_y+W;
-        Vector2A Head,Chest,Pelvis,Left_Shoulder,Right_Shoulder,Left_Elbow,Right_Elbow,
-                 Left_Wrist,Right_Wrist,Left_Thigh,Right_Thigh,Left_Knee,Right_Knee,Left_Ankle,Right_Ankle;
-        bool bonesOk=false;
-        Vector3A wHeadW,wChestW,wPelvisW;
-
-        if (bodyInView&&(DrawIo[4]||g_Aim.enable)) {
-            long int Mesh=driver->read<uint64_t>(Objaddr+0x510);
-            if(PtrOk((uint64_t)Mesh)){
-                long int boneArrayPtr=driver->read<uint64_t>(Mesh+0x9a8);
-                int BoneCount=driver->read<int>(Mesh+0x9a8+8);
-                if(PtrOk((uint64_t)boneArrayPtr)&&BoneCount>0&&BoneCount<200){
-                    int idx_head=5,idx_chest=4,idx_pelvis=0;
-                    int idx_lsh,idx_rsh,idx_lelb,idx_relb,idx_lw,idx_rw,idx_lth,idx_rth,idx_lk,idx_rk,idx_la,idx_ra;
-                    if(isDog){idx_lsh=7;idx_rsh=11;idx_lelb=8;idx_relb=12;idx_lw=9;idx_rw=13;idx_lth=14;idx_rth=18;idx_lk=15;idx_rk=19;idx_la=16;idx_ra=20;}
-                    else if(isHunger){idx_lsh=11;idx_rsh=18;idx_lelb=12;idx_relb=19;idx_lw=13;idx_rw=20;idx_lth=24;idx_rth=29;idx_lk=25;idx_rk=30;idx_la=26;idx_ra=31;}
-                    else if(BoneCount==67){idx_lsh=13;idx_rsh=34;idx_lelb=14;idx_relb=35;idx_lw=16;idx_rw=37;idx_lth=54;idx_rth=58;idx_lk=55;idx_rk=59;idx_la=56;idx_ra=60;}
-                    else if(BoneCount==29){idx_lsh=7;idx_rsh=13;idx_lelb=8;idx_relb=14;idx_lw=9;idx_rw=15;idx_lth=18;idx_rth=21;idx_lk=19;idx_rk=22;idx_la=20;idx_ra=23;}
-                    else{idx_lsh=11;idx_rsh=32;idx_lelb=12;idx_relb=33;idx_lw=63;idx_rw=62;idx_lth=52;idx_rth=56;idx_lk=53;idx_rk=57;idx_la=54;idx_ra=58;}
-                    long int human=Mesh+0x210; long int Bone=boneArrayPtr+0x30;
-                    FTransform meshtrans=getBone(human);
-                    FMatrix c2wMatrix=TransformToMatrix(meshtrans);
-                    auto BW=[&](int idx){return MarixToVector(MatrixMulti(TransformToMatrix(getBone(Bone+idx*48)),c2wMatrix));};
-                    wHeadW=BW(idx_head); wHeadW.Z+=7.0f;
-                    wChestW=BW(idx_chest); wPelvisW=BW(idx_pelvis);
-                    Vector3A wLSh=BW(idx_lsh),wRSh=BW(idx_rsh),wLElb=BW(idx_lelb),wRElb=BW(idx_relb);
-                    Vector3A wLW=BW(idx_lw),wRW=BW(idx_rw),wLTh=BW(idx_lth),wRTh=BW(idx_rth);
-                    Vector3A wLK=BW(idx_lk),wRK=BW(idx_rk),wLA=BW(idx_la),wRA=BW(idx_ra);
-                    auto okw=[&](const Vector3A& p){return fabsf(p.X-wPelvisW.X)<300&&fabsf(p.Y-wPelvisW.Y)<300&&fabsf(p.Z-wPelvisW.Z)<300;};
-                    if(okw(wHeadW)&&okw(wChestW)&&okw(wLSh)&&okw(wRSh)&&okw(wLElb)&&okw(wRElb)&&okw(wLW)&&okw(wRW)&&
-                       okw(wLTh)&&okw(wRTh)&&okw(wLK)&&okw(wRK)&&okw(wLA)&&okw(wRA)){
+        float MIDDLE = r_x, TOP_FALLBACK = r_y - W, BOTTOM_FALLBACK = r_y + W;
+        Vector2A Head, Chest, Pelvis, Left_Shoulder, Right_Shoulder, Left_Elbow, Right_Elbow,
+                 Left_Wrist, Right_Wrist, Left_Thigh, Right_Thigh, Left_Knee, Right_Knee, Left_Ankle, Right_Ankle;
+        bool bonesOk = false;
+        Vector3A wHeadW, wChestW, wPelvisW;
+        if (bodyOnScreen && (DrawIo[4] || g_Aim.enable)) {
+            long int Mesh = driver->read<uint64_t>(Objaddr + 0x510);
+            if (PtrOk((uint64_t)Mesh)) {
+                long int boneArrayPtr = driver->read<uint64_t>(Mesh + 0x9a8);
+                int BoneCount = driver->read<int>(Mesh + 0x9a8 + 8);
+                if (PtrOk((uint64_t)boneArrayPtr) && BoneCount > 0 && BoneCount < 200) {
+                    int idx_head=5, idx_chest=4, idx_pelvis=0;
+                    int idx_lsh, idx_rsh, idx_lelb, idx_relb, idx_lw, idx_rw, idx_lth, idx_rth, idx_lk, idx_rk, idx_la, idx_ra;
+                    if (isDog) { idx_lsh=7; idx_rsh=11; idx_lelb=8; idx_relb=12; idx_lw=9; idx_rw=13; idx_lth=14; idx_rth=18; idx_lk=15; idx_rk=19; idx_la=16; idx_ra=20; }
+                    else if (isHunger) { idx_lsh=11; idx_rsh=18; idx_lelb=12; idx_relb=19; idx_lw=13; idx_rw=20; idx_lth=24; idx_rth=29; idx_lk=25; idx_rk=30; idx_la=26; idx_ra=31; }
+                    else if (BoneCount == 67) { idx_lsh=13; idx_rsh=34; idx_lelb=14; idx_relb=35; idx_lw=16; idx_rw=37; idx_lth=54; idx_rth=58; idx_lk=55; idx_rk=59; idx_la=56; idx_ra=60; }
+                    else if (BoneCount == 29) { idx_lsh=7; idx_rsh=13; idx_lelb=8; idx_relb=14; idx_lw=9; idx_rw=15; idx_lth=18; idx_rth=21; idx_lk=19; idx_rk=22; idx_la=20; idx_ra=23; }
+                    else { idx_lsh=11; idx_rsh=32; idx_lelb=12; idx_relb=33; idx_lw=63; idx_rw=62; idx_lth=52; idx_rth=56; idx_lk=53; idx_rk=57; idx_la=54; idx_ra=58; }
+                    long int human = Mesh + 0x210;
+                    long int Bone = boneArrayPtr + 0x30;
+                    FTransform meshtrans = getBone(human);
+                    FMatrix c2wMatrix = TransformToMatrix(meshtrans);
+                    auto BW = [&](int idx) { return MarixToVector(MatrixMulti(TransformToMatrix(getBone(Bone + idx*48)), c2wMatrix)); };
+                    wHeadW = BW(idx_head); wHeadW.Z += 7.0f;
+                    wChestW = BW(idx_chest); wPelvisW = BW(idx_pelvis);
+                    Vector3A wLSh=BW(idx_lsh), wRSh=BW(idx_rsh), wLElb=BW(idx_lelb), wRElb=BW(idx_relb);
+                    Vector3A wLW=BW(idx_lw), wRW=BW(idx_rw), wLTh=BW(idx_lth), wRTh=BW(idx_rth);
+                    Vector3A wLK=BW(idx_lk), wRK=BW(idx_rk), wLA=BW(idx_la), wRA=BW(idx_ra);
+                    auto okw = [&](const Vector3A& p) { return fabsf(p.X-wPelvisW.X)<300 && fabsf(p.Y-wPelvisW.Y)<300 && fabsf(p.Z-wPelvisW.Z)<300; };
+                    if (okw(wHeadW)&&okw(wChestW)&&okw(wLSh)&&okw(wRSh)&&okw(wLElb)&&okw(wRElb)&&okw(wLW)&&okw(wRW)&&
+                        okw(wLTh)&&okw(wRTh)&&okw(wLK)&&okw(wRK)&&okw(wLA)&&okw(wRA)) {
                         Head=WorldToScreen(wHeadW,matrix,camera); Chest=WorldToScreen(wChestW,matrix,camera);
                         Pelvis=WorldToScreen(wPelvisW,matrix,camera);
                         Left_Shoulder=WorldToScreen(wLSh,matrix,camera); Right_Shoulder=WorldToScreen(wRSh,matrix,camera);
@@ -467,42 +468,38 @@ void DrawPlayerNVG(NVGcontext* vg) {
                         Left_Thigh=WorldToScreen(wLTh,matrix,camera); Right_Thigh=WorldToScreen(wRTh,matrix,camera);
                         Left_Knee=WorldToScreen(wLK,matrix,camera); Right_Knee=WorldToScreen(wRK,matrix,camera);
                         Left_Ankle=WorldToScreen(wLA,matrix,camera); Right_Ankle=WorldToScreen(wRA,matrix,camera);
-                        bonesOk=onScreen(Head)&&onScreen(Chest)&&onScreen(Pelvis)&&onScreen(Left_Shoulder)&&onScreen(Right_Shoulder)&&
-                               onScreen(Left_Elbow)&&onScreen(Right_Elbow)&&onScreen(Left_Wrist)&&onScreen(Right_Wrist)&&
-                               onScreen(Left_Thigh)&&onScreen(Right_Thigh)&&onScreen(Left_Knee)&&onScreen(Right_Knee)&&
-                               onScreen(Left_Ankle)&&onScreen(Right_Ankle);
-                        if(bonesOk){
-                            float bh=((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y:Left_Ankle.Y)-(Head.Y-W/5.0f);
-                            if(bh>6.0f*W||bh<0.5f*W)bonesOk=false;
+                        bonesOk = onScreen(Head)||onScreen(Chest)||onScreen(Pelvis)||onScreen(Left_Ankle)||onScreen(Right_Ankle);
+                        if (bonesOk) {
+                            float bh = ((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y:Left_Ankle.Y) - (Head.Y - W/5.0f);
+                            if (bh > 6.0f * W || bh < 0.5f * W) bonesOk = false;
                         }
-                        if(bonesOk){
-                            Vector2A partSc=(g_Aim.part==0)?Head:((g_Aim.part==1)?Chest:Pelvis);
-                            Vector3A partW=(g_Aim.part==0)?wHeadW:((g_Aim.part==1)?wChestW:wPelvisW);
-                            float sd=sqrtf(powf(partSc.X-px,2)+powf(partSc.Y-py,2));
-                            if(sd<g_Aim.fov){
+                        if (bonesOk) {
+                            Vector2A partSc = (g_Aim.part==0)?Head:((g_Aim.part==1)?Chest:Pelvis);
+                            Vector3A partW = (g_Aim.part==0)?wHeadW:((g_Aim.part==1)?wChestW:wPelvisW);
+                            float sd = sqrtf(powf(partSc.X-px,2)+powf(partSc.Y-py,2));
+                            if (sd < g_Aim.fov) {
                                 Vector3A vel; memset(&vel,0,sizeof(vel));
-                                long vp=driver->read<uint64_t>(Objaddr+0x208);
-                                if(PtrOk((uint64_t)vp))driver->read(vp+0x2C0,&vel,sizeof(vel));
-                                AimFeedTarget(partW,vel,sd);
+                                long vp = driver->read<uint64_t>(Objaddr + 0x208);
+                                if (PtrOk((uint64_t)vp)) driver->read(vp + 0x2C0, &vel, sizeof(vel));
+                                AimFeedTarget(partW, vel, sd);
                             }
                         }
                     }
                 }
             }
         }
-        if(!bodyInView)continue;
-        float headX=(bonesOk&&Head.X>0)?Head.X:MIDDLE;
-        float headY=(bonesOk&&Head.Y>0)?Head.Y:TOP_FALLBACK;
-        float left=headX-W*0.6f, right=headX+W*0.6f;
-        float top=(bonesOk&&Head.Y>0)?(Head.Y-W/5.0f):TOP_FALLBACK;
-        float bottom=(bonesOk)?((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y+W/10.0f:Left_Ankle.Y+W/10.0f):BOTTOM_FALLBACK;
-        NVGcolor COL_WHITE=nvgRGBA(255,255,255,255), COL_BLACK=nvgRGBA(0,0,0,255);
-        if(DrawIo[3])DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,headX,top,COL_WHITE,1.0f);
-        if(DrawIo[1]){
+        float headX = (bonesOk&&Head.X>0)?Head.X:MIDDLE;
+        float headY = (bonesOk&&Head.Y>0)?Head.Y:TOP_FALLBACK;
+        float left = headX - W*0.6f, right = headX + W*0.6f;
+        float top = (bonesOk&&Head.Y>0)?(Head.Y - W/5.0f):TOP_FALLBACK;
+        float bottom = (bonesOk)?((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y+W/10.0f:Left_Ankle.Y+W/10.0f):BOTTOM_FALLBACK;
+        NVGcolor COL_WHITE = nvgRGBA(255,255,255,255), COL_BLACK = nvgRGBA(0,0,0,255);
+        if (DrawIo[3]) DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,headX,top,COL_WHITE,1.0f);
+        if (DrawIo[1]) {
             DrawLineNVG(vg,left,top,right,top,COL_WHITE,1.5f); DrawLineNVG(vg,right,top,right,bottom,COL_WHITE,1.5f);
             DrawLineNVG(vg,right,bottom,left,bottom,COL_WHITE,1.5f); DrawLineNVG(vg,left,bottom,left,top,COL_WHITE,1.5f);
         }
-        if(DrawIo[4]&&bonesOk){
+        if (DrawIo[4] && bonesOk) {
             nvgBeginPath(vg); nvgCircle(vg,Head.X,Head.Y,W/5.0f);
             nvgStrokeColor(vg,COL_WHITE); nvgStrokeWidth(vg,1.5f); nvgStroke(vg);
             DrawLineNVG(vg,Head.X,Head.Y,Chest.X,Chest.Y,COL_WHITE,1.5f);
@@ -520,41 +517,59 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawLineNVG(vg,Left_Knee.X,Left_Knee.Y,Left_Ankle.X,Left_Ankle.Y,COL_WHITE,1.5f);
             DrawLineNVG(vg,Right_Knee.X,Right_Knee.Y,Right_Ankle.X,Right_Ankle.Y,COL_WHITE,1.5f);
         }
-        if(DrawIo[5]){
-            float CurHP=当前血量, MaxHP=最大血量;
-            if(MaxHP<=0)MaxHP=100.0f;
-            if(CurHP<0)CurHP=0; if(CurHP>MaxHP)CurHP=MaxHP;
-            int hp_percent=(int)(CurHP/MaxHP*100);
-            float cx2=headX, cy2=top-70.0f;
-            nvgBeginPath(vg);
-            nvgArc(vg,cx2,cy2,24.0f,-NVG_PI/2.0f,-NVG_PI/2.0f+2.0f*NVG_PI*(CurHP/MaxHP),NVG_CW);
-            nvgStrokeColor(vg,COL_WHITE); nvgStrokeWidth(vg,4.0f); nvgLineCap(vg,NVG_ROUND); nvgStroke(vg);
-            char hpBuf[8]; snprintf(hpBuf,sizeof(hpBuf),"%d%%",hp_percent);
-            DrawOutlinedTextNVG(vg,g_font_agency,hpBuf,{cx2,cy2-6.0f},13.0f,COL_WHITE,COL_BLACK,true,1.0f);
-            char wline[96]="";
-            long wq1=driver->read<uint64_t>(Objaddr+0x2608);
-            if(PtrOk((uint64_t)wq1)){
-                long wq2=driver->read<uint64_t>(wq1+0x5D8);
-                if(PtrOk((uint64_t)wq2)){
-                    long wq3=driver->read<uint64_t>(wq2+0x1e0);
-                    int curB=0,maxB=0;
-                    if(PtrOk((uint64_t)wq3)){curB=driver->read<int>(wq3+0x1018);maxB=driver->read<int>(wq3+0x1030);}
-                    char clean[48]="";
-                    if(!GetWeaponName(wq3,clean,sizeof(clean)))GetWeaponName(wq2,clean,sizeof(clean));
-                    if(clean[0]&&maxB>0)snprintf(wline,sizeof(wline),"%s %d/%d",clean,curB,maxB);
-                    else if(clean[0])snprintf(wline,sizeof(wline),"%s",clean);
-                    else if(maxB>0)snprintf(wline,sizeof(wline),"%d/%d",curB,maxB);
+        if (DrawIo[2]) {
+            char distBuf[16]; snprintf(distBuf, sizeof(distBuf), "%d m", (int)Distance);
+            float yPos = bottom + 6;
+            if (yPos > (float)abs_ScreenY - 25) yPos = (float)abs_ScreenY - 25;
+            DrawOutlinedTextNVG(vg, g_font_agency, distBuf, {headX, yPos}, 25.0f, COL_WHITE, COL_BLACK, true, 1.0f);
+        }
+        if (DrawIo[5]) {
+            char tagBuf[96];
+            if (isBot) snprintf(tagBuf, sizeof(tagBuf), "[%d] 人机", 敌人队伍);
+            else { getUTF8(PlayerName, driver->read<uint64_t>(Objaddr + 0x960)); snprintf(tagBuf, sizeof(tagBuf), "[%d] %s", 敌人队伍, PlayerName); }
+            float yPos = top - 24; if (yPos < 0) yPos = 0;
+            DrawOutlinedTextNVG(vg, g_font_agency, tagBuf, {headX, yPos}, 18.0f, COL_WHITE, COL_BLACK, true, 1.0f);
+        }
+        if (DrawIo[9]) {
+            char clean[48] = "";
+            long wq1 = driver->read<uint64_t>(Objaddr + 0x2608);
+            if (PtrOk((uint64_t)wq1)) {
+                long wq2 = driver->read<uint64_t>(wq1 + 0x5D8);
+                long cands[3] = {0,0,0};
+                if (PtrOk((uint64_t)wq2)) {
+                    cands[0] = wq2;
+                    cands[1] = driver->read<uint64_t>(wq2 + 0x1e0);
+                    long ent = driver->read<uint64_t>(wq1 + 0x1370);
+                    if (PtrOk((uint64_t)ent)) {
+                        long cw = driver->read<uint64_t>(ent + 0x5D8);
+                        if (PtrOk((uint64_t)cw)) cands[2] = driver->read<uint64_t>(cw + 0x1e0);
+                    }
+                }
+                for (int c = 0; c < 3 && !clean[0]; c++) {
+                    if (PtrOk((uint64_t)cands[c])) GetWeaponName(cands[c], clean, sizeof(clean));
                 }
             }
-            if(wline[0])DrawOutlinedTextNVG(vg,g_font_agency,wline,{headX,top-40.0f},16.0f,COL_WHITE,COL_BLACK,true,1.0f);
-            char tagBuf[96];
-            if(isBot)snprintf(tagBuf,sizeof(tagBuf),"[%d] 人机",敌人队伍);
-            else{getUTF8(PlayerName,driver->read<uint64_t>(Objaddr+0x960));snprintf(tagBuf,sizeof(tagBuf),"[%d] %s",敌人队伍,PlayerName);}
-            float ty=top-22.0f; if(ty<0)ty=0;
-            DrawOutlinedTextNVG(vg,g_font_agency,tagBuf,{headX,ty},18.0f,COL_WHITE,COL_BLACK,true,1.0f);
-            char distBuf[16]; snprintf(distBuf,sizeof(distBuf),"%d m",(int)Distance);
-float dy2=bottom+6; if(dy2>(float)abs_ScreenY-25)dy2=(float)abs_ScreenY-25;
-DrawOutlinedTextNVG(vg,g_font_agency,distBuf,{headX,dy2},25.0f,COL_WHITE,COL_BLACK,true,1.0f);
+            if (clean[0]) {
+                float wy = top - 44; if (wy < 0) wy = 0;
+                DrawOutlinedTextNVG(vg, g_font_agency, clean, {headX, wy}, 16.0f, COL_WHITE, COL_BLACK, true, 1.0f);
+            }
+        }
+        if (DrawIo[7]) {
+            char buf[32]; sprintf(buf, "0x%lx", Objaddr);
+            DrawOutlinedTextNVG(vg, g_font_agency, buf, {headX, bottom}, 16.0f, COL_WHITE, COL_BLACK, true, 1.0f);
+        }
+        if (DrawIo[6]) {
+            float CurHP = 当前血量, MaxHP = 最大血量;
+            if (MaxHP <= 0) MaxHP = 100.0f;
+            if (CurHP < 0) CurHP = 0; if (CurHP > MaxHP) CurHP = MaxHP;
+            float hp_ratio = CurHP / MaxHP;
+            int hp_percent = (int)(hp_ratio * 100);
+            float cx2 = headX, cy2 = top - 56.0f;
+            nvgBeginPath(vg);
+            nvgArc(vg, cx2, cy2, 24.0f, -NVG_PI/2.0f, -NVG_PI/2.0f + 2.0f*NVG_PI*hp_ratio, NVG_CW);
+            nvgStrokeColor(vg, COL_WHITE); nvgStrokeWidth(vg, 4.0f); nvgLineCap(vg, NVG_ROUND); nvgStroke(vg);
+            char hpBuf[8]; snprintf(hpBuf, sizeof(hpBuf), "%d%%", hp_percent);
+            DrawOutlinedTextNVG(vg, g_font_agency, hpBuf, {cx2, cy2-6.0f}, 13.0f, COL_WHITE, COL_BLACK, true, 1.0f);
         }
     }
 }
