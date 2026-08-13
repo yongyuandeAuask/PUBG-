@@ -184,7 +184,7 @@ static void* HwbpAimThread(void*) {
                 auto& rec = recs[i];
                 memset(rec.mask,0,sizeof(rec.mask));
                 bool wantWrite = trigOk && g_Target.valid;
-                if (wantWrite && g_Aim.prob && ((float)rand()/RAND_MAX)>g_Aim.probRate) wantWrite=false;
+                if (wantWrite && g_Aim.prob && ((float)rand()/(float)RAND_MAX)>g_Aim.probRate) wantWrite=false;
                 if (wantWrite){
                     Vector3A start = UnpackHFA(rec,0);
                     if (!PosOk(start)) wantWrite=false;
@@ -553,7 +553,8 @@ void DrawPlayerNVG(NVGcontext* vg) {
             float ty=top-22.0f; if(ty<0)ty=0;
             DrawOutlinedTextNVG(vg,g_font_agency,tagBuf,{headX,ty},18.0f,COL_WHITE,COL_BLACK,true,1.0f);
             char distBuf[16]; snprintf(distBuf,sizeof(distBuf),"%d m",(int)Distance);
-            DrawOutlinedTextNVG(vg,g_font_agency,distBuf,{headX,dy2},25.0f,COL_WHITE,COL_BLACK,true,1.0f);
+float dy2=bottom+6; if(dy2>(float)abs_ScreenY-25)dy2=(float)abs_ScreenY-25;
+DrawOutlinedTextNVG(vg,g_font_agency,distBuf,{headX,dy2},25.0f,COL_WHITE,COL_BLACK,true,1.0f);
         }
     }
 }
