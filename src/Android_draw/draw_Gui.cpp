@@ -1,4 +1,4 @@
-// src/Android_draw/draw_Gui.cpp —— 最终修复完整版
+// src/Android_draw/draw_Gui.cpp —— 修复版：重复初始化 / 自身排除 / 追锁单位 / 瞬时弹道
 #include "draw.h"
 #include "My_font/zh_Font.h"
 #include "读写.h"
@@ -35,7 +35,7 @@ static volatile float g_aimDs = 0;
 // 视频悬浮窗
 static VideoFramePlayer g_video;
 static bool   g_videoInited = false;
-static bool   g_showMenu    = true;    // 修复①：默认弹出菜单
+static bool   g_showMenu    = true;
 static float  g_videoScale  = 0.6f;
 static ImVec2 g_videoPos    = ImVec2(80, 300);
 
@@ -43,9 +43,10 @@ static struct {
     bool enable = false;
     int  part = 0;
     int  trigger = 0;
-    bool predict = true;
+    bool instant = true;      // 修复④：瞬时弹道（main.cpp 逻辑），默认开
+    bool predict = false;
     float predScale = 1.0f;
-    float dropCoef = 540.0f;
+    float dropCoef = 490.0f;
     float recoilComp = 0.0f;
     bool dynFov = false;
     bool prob = false;
@@ -58,24 +59,36 @@ static struct {
 } g_Aim;
 
 static struct { bool valid = false; Vector3A pos, vel; float screenDist = 0; } g_Target;
-static float g_BulletSpeed = 600.0f;
+static float g_BulletSpeed = 88000.0f;   // 修复③：cm/s
 static volatile uint64_t g_bpHits = 0;
 static volatile bool g_bpSet = false;
+static volatile pid_t g_bpPid = 0;       // 修复①：断点绑定的 pid
+static uint64_t g_selfPawn = 0;          // 修复②：自身 pawn（AcknowledgedPawn）
+static bool g_threadStarted = false;
 
 static Vector3A UnpackHFA(const paradise_hwbp_record& r, int base) {
     const __uint128_t* qs = &r.q0;
-    Vector3A v; v.X = *(const float*)&qs[base+0]; v.Y = *(const float*)&qs[base+1]; v.Z = *(const float*)&qs[base+2];
+    Vector3A v;
+    v.X = *(const float*)&qs[base+0];
+    v.Y = *(const float*)&qs[base+1];
+    v.Z = *(const float*)&qs[base+2];
     return v;
 }
 static void PackHFA(paradise_hwbp_record& r, int base, const Vector3A& v) {
     __uint128_t* qs = &r.q0;
-    *(float*)&qs[base+0] = v.X; *(float*)&qs[base+1] = v.Y; *(float*)&qs[base+2] = v.Z;
+    *(float*)&qs[base+0] = v.X;
+    *(float*)&qs[base+1] = v.Y;
+    *(float*)&qs[base+2] = v.Z;
 }
 static void AimFrameBegin() { g_Target.valid = false; g_Target.screenDist = 1e9f; }
 static void AimFeedTarget(const Vector3A& pos, const Vector3A& vel, float sd) {
     if (sd < g_Target.screenDist) { g_Target.valid = true; g_Target.pos = pos; g_Target.vel = vel; g_Target.screenDist = sd; }
 }
-static void AimFeedBulletSpeed(float v) { if (v > 50.0f) g_BulletSpeed = v; }
+// 修复③：速度统一 cm/s（<2000 视为 m/s 自动换算）
+static void AimFeedBulletSpeed(float v) {
+    if (v > 50.0f && v < 2000.0f) v *= 100.0f;
+    if (v > 50.0f) g_BulletSpeed = v;
+}
 static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
 
 // ==================== 视频悬浮窗 ====================
@@ -125,31 +138,35 @@ static void VideoBallUI() {
     }
     bool down = io.MouseDown[0];
     bool hov  = ImGui::IsItemHovered();
-    if (down&&!prevDown&&hov){holding=true;dragging=false;downX=io.MousePos.x;downY=io.MousePos.y;}
-    if (holding&&down){ if(fabsf(io.MousePos.x-downX)+fabsf(io.MousePos.y-downY)>12)dragging=true;
+    if (down && !prevDown && hov){holding=true;dragging=false;downX=io.MousePos.x;downY=io.MousePos.y;}
+    if (holding && down){ if(fabsf(io.MousePos.x-downX)+fabsf(io.MousePos.y-downY)>12)dragging=true;
         if(dragging){g_videoPos.x+=io.MouseDelta.x;g_videoPos.y+=io.MouseDelta.y;} }
-    if (!down&&prevDown&&holding){ holding=false;
-        if(!dragging&&(ImGui::GetTime()-lastToggle)>0.35){g_showMenu=!g_showMenu;lastToggle=ImGui::GetTime();} dragging=false; }
+    if (!down && prevDown && holding){ holding=false;
+        if(!dragging && (ImGui::GetTime()-lastToggle)>0.35){g_showMenu=!g_showMenu;lastToggle=ImGui::GetTime();} dragging=false; }
     prevDown = down;
     ImGui::End();
     ImGui::PopStyleVar(); ImGui::PopStyleColor();
 }
 
-// ==================== 追锁线程 ====================
+// ==================== 追锁线程（重构：瞬时弹道 + pid 变更自动重设断点）====================
 static void* HwbpAimThread(void*) {
     while (true) {
         if (!初始化 || !libbase || !MySelf) { usleep(50000); continue; }
         if (!g_Aim.enable) { if (g_bpSet){driver->hwbp_remove();g_bpSet=false;} usleep(50000); continue; }
+        // 修复①：游戏重启 pid 变化 → 旧断点作废重设
+        if (g_bpSet && g_bpPid != pid) { driver->hwbp_remove(); g_bpSet = false; }
         if (!g_bpSet) {
             paradise_hwbp_point_config pt; memset(&pt,0,sizeof(pt));
             pt.address=(uint64_t)libbase+0x6DFE100; pt.type=PARADISE_HWBP_EXECUTE;
             pt.length=4; pt.scope=PARADISE_HWBP_ALL_THREADS;
             g_bpSet = driver->hwbp_set(&pt,1);
+            if (g_bpSet) g_bpPid = pid;
             if(!g_bpSet){usleep(100000);continue;}
         }
         bool trigOk = true;
         if (g_Aim.trigger==1) trigOk = g_isFiring!=0;
         else if (g_Aim.trigger==2) trigOk = driver->read<int>(MySelf+0x1134)!=0;
+
         if (g_Aim.gyro && trigOk && g_Target.valid) {
             float c = matrix[3]*g_Target.pos.X+matrix[7]*g_Target.pos.Y+matrix[11]*g_Target.pos.Z+matrix[15];
             if (c>0.001f){
@@ -161,24 +178,31 @@ static void* HwbpAimThread(void*) {
                 driver->gyro_update(gx,gy);
             }
         }
+
         paradise_hwbp_record recs[8]; uint32_t cnt=0;
-        if (driver->hwbp_get_records(0,0,recs,8,&cnt)&&cnt>0){
+        if (driver->hwbp_get_records(0,0,recs,8,&cnt) && cnt>0){
             for (uint32_t i=0;i<cnt;i++){
                 g_bpHits++;
                 auto& rec = recs[i];
                 memset(rec.mask,0,sizeof(rec.mask));
                 bool wantWrite = trigOk && g_Target.valid;
-                if (wantWrite&&g_Aim.prob&&((float)rand()/RAND_MAX)>g_Aim.probRate) wantWrite=false;
+                if (wantWrite && g_Aim.prob && ((float)rand()/RAND_MAX)>g_Aim.probRate) wantWrite=false;
                 if (wantWrite){
                     Vector3A start = UnpackHFA(rec,0);
-                    if (fabsf(start.X)<1&&fabsf(start.Y)<1) wantWrite=false;
+                    if (fabsf(start.X)<1 && fabsf(start.Y)<1) wantWrite=false;
                     else {
                         Vector3A aim = g_Target.pos;
-                        float dist = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2));
-                        float fly = dist/g_BulletSpeed;
-                        if (g_Aim.predict){aim.X+=g_Target.vel.X*fly*g_Aim.predScale;aim.Y+=g_Target.vel.Y*fly*g_Aim.predScale;aim.Z+=g_Target.vel.Z*fly*g_Aim.predScale;}
-                        aim.Z += g_Aim.dropCoef*fly*fly;
-                        if (g_Aim.recoilComp>0&&g_isFiring) aim.Z -= (dist/100.0f)*g_Aim.recoilComp;
+                        float dist = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2)); // cm
+                        // 修复④：瞬时弹道=不算飞行时间（main.cpp 的 aimoSpeed=99999999 逻辑）
+                        float fly = 0.0f;
+                        if (!g_Aim.instant) fly = dist / g_BulletSpeed;   // cm/(cm/s)=秒
+                        if (g_Aim.predict && fly>0.0f){
+                            aim.X += g_Target.vel.X*fly*g_Aim.predScale;
+                            aim.Y += g_Target.vel.Y*fly*g_Aim.predScale;
+                            aim.Z += g_Target.vel.Z*fly*g_Aim.predScale;
+                        }
+                        if (!g_Aim.instant) aim.Z += g_Aim.dropCoef*fly*fly;
+                        if (g_Aim.recoilComp>0 && g_isFiring) aim.Z -= (dist/100.0f)*g_Aim.recoilComp;
                         float dx=aim.X-start.X, dy=aim.Y-start.Y, dz=aim.Z-start.Z;
                         float hyp=sqrtf(dx*dx+dy*dy);
                         Vector3A rot;
@@ -202,22 +226,40 @@ static void* HwbpAimThread(void*) {
     return nullptr;
 }
 
+// 修复①：支持重复初始化（重进游戏后再点按钮 = 热更新地址）
 void DrawInit() {
-    if (初始化) return;
-    pid = getPID("com.rekoo.pubgm");
-    if (pid<=0){printf("游戏未启动\n");return;}
-    libbase = getModuleBase("libUE4.so");
-    if (libbase<=0){printf("libUE4.so 未找到\n");return;}
-    初始化 = true;
-    // 修复②：默认打开基础绘制，否则屏幕空白且自瞄拿不到目标
-    DrawIo[1]=true; DrawIo[2]=true; DrawIo[3]=true; DrawIo[4]=true; DrawIo[5]=true;
+    pid_t newPid = getPID("com.rekoo.pubgm");
+    if (newPid <= 0){printf("游戏未启动\n");return;}
+    long newBase = getModuleBase("libUE4.so");
+    if (newBase <= 0){printf("libUE4.so 未找到\n");return;}
+
+    bool firstTime = !初始化;
+    bool changed = (newPid != pid) || (newBase != libbase);
+    pid = newPid;
+    libbase = newBase;
     driver->initialize(pid);
-    driver->hide_process(getpid(), true);
-    char selfPath[128];
-    ssize_t n = readlink("/proc/self/exe", selfPath, sizeof(selfPath)-1);
-    if (n>0){selfPath[n]=0; driver->hide_path(selfPath,true);}
+
+    if (changed && !firstTime) {
+        // 游戏重启：旧断点/旧缓存全部作废
+        driver->hwbp_remove();
+        g_bpSet = false;
+        g_bpPid = 0;
+        g_selfPawn = 0;
+        MySelf = 0;
+    }
+    if (firstTime) {
+        初始化 = true;
+        DrawIo[1]=true; DrawIo[2]=true; DrawIo[3]=true; DrawIo[4]=true; DrawIo[5]=true;
+        driver->hide_process(getpid(), true);
+        char selfPath[128];
+        ssize_t n = readlink("/proc/self/exe", selfPath, sizeof(selfPath)-1);
+        if (n>0){selfPath[n]=0; driver->hide_path(selfPath,true);}
+        if (!g_threadStarted) {
+            pthread_t t; pthread_create(&t,nullptr,HwbpAimThread,nullptr); pthread_detach(t);
+            g_threadStarted = true;
+        }
+    }
     printf("初始化成功! libUE4: %lx, pid: %d\n", libbase, pid);
-    pthread_t t; pthread_create(&t,nullptr,HwbpAimThread,nullptr); pthread_detach(t);
 }
 
 void UpdateGameData() {
@@ -235,13 +277,20 @@ void UpdateGameData() {
     memset(matrix,0,16);
     driver->read((uintptr_t)Matrix, matrix, 16*4);
     g_isFiring = driver->read<int>(MySelf + 0x1830);
+
+    // 修复②：读真正的自身 pawn（控制器 0x4b18 -> AcknowledgedPawn 0x528）
+    uint64_t ctrl = driver->read<uint64_t>(MySelf + 0x4b18);
+    if (PtrOk(ctrl)) {
+        uint64_t sp = driver->read<uint64_t>(ctrl + 0x528);
+        if (PtrOk(sp)) g_selfPawn = sp;
+    }
+
     long wq1 = driver->read<uint64_t>(MySelf + 0x2608);
     if (PtrOk((uint64_t)wq1)) {
         long wq2 = driver->read<uint64_t>(wq1 + 0x5D8);
         if (PtrOk((uint64_t)wq2)) {
             float bs = driver->read<float>(wq2 + 0x560);
-            if (bs>10000) bs*=0.01f;
-            AimFeedBulletSpeed(bs);
+            AimFeedBulletSpeed(bs);   // 修复③：不再 *0.01
         }
     }
 }
@@ -316,10 +365,12 @@ void DrawPlayerNVG(NVGcontext* vg) {
         long int Objaddr=driver->read<uint64_t>(Arrayaddr+0x8*i);
         if(Objaddr<=0xffff||Objaddr==0||Objaddr<=0x10000000||Objaddr%4!=0||Objaddr>=0x10000000000)continue;
         if(MySelf==Objaddr)continue;
+        if(g_selfPawn && Objaddr==g_selfPawn)continue;   // 修复②：双重排除自身
         int ClassID=driver->read<int>(Objaddr+24);
         long FNameEntry=driver->read<uint64_t>(driver->read<uint64_t>(类地址+(ClassID/0x4000)*0x8)+(ClassID%0x4000)*0x8);
         char ClassName[64]=""; driver->read((uintptr_t)(FNameEntry+0xC),ClassName,64);
         if(strstr(ClassName,"BPPawn_Escape_Raven")!=0||strstr(ClassName,"BPPawn_Escape_UAV_C")!=0)continue;
+
         if (DrawIo[8]) {
             const char* vname=NULL;
             if(strstr(ClassName,"UAZ"))vname="吉普车"; else if(strstr(ClassName,"Dacia"))vname="轿车";
@@ -356,6 +407,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
                 continue;
             }
         }
+
         float 玩家标志=driver->read<float>(Objaddr+0x2b78);
         bool isDog=(strstr(ClassName,"AIMob_PatrolDog_C")!=0);
         bool isHunger=(strstr(ClassName,"BPPawn_HungerH_C")!=0)||(strstr(ClassName,"BPPawn_HungerB_C")!=0);
@@ -371,6 +423,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float 最大血量=driver->read<float>(Objaddr+0xe64);
         if(最大血量<=0)continue;
         PlayerCount++; if(isBot)BotCount++; else RealCount++;
+
         Vector3A D; driver->read((uintptr_t)(driver->read<uint64_t>(Objaddr+0x208)+0x1c8),&D,sizeof(D));
         float camera=matrix[3]*D.X+matrix[7]*D.Y+matrix[11]*D.Z+matrix[15];
         if(camera<=0.001f)continue;
@@ -381,7 +434,6 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float r_w=py-(matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z+205)+matrix[13])/camera*py;
         float W=(r_y-r_w)/2;
         if(W<=0||W>3000)continue;
-        // 修复③：只卡身体中心，留50px余量，去掉r_w条件（近距目标不再被跳过）
         bool bodyInView = r_x > -50.0f && r_x < (float)abs_ScreenX + 50.0f &&
                           r_y > -50.0f && r_y < (float)abs_ScreenY + 50.0f;
         float MIDDLE=r_x, TOP_FALLBACK=r_y-W, BOTTOM_FALLBACK=r_y+W;
@@ -389,6 +441,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
                  Left_Wrist,Right_Wrist,Left_Thigh,Right_Thigh,Left_Knee,Right_Knee,Left_Ankle,Right_Ankle;
         bool bonesOk=false;
         Vector3A wHeadW,wChestW,wPelvisW;
+
         if (bodyInView&&(DrawIo[4]||g_Aim.enable)) {
             long int Mesh=driver->read<uint64_t>(Objaddr+0x510);
             if(PtrOk((uint64_t)Mesh)){
@@ -573,6 +626,7 @@ void Layout_tick_UI(bool* main_thread_flag) {
             ImGui::Text("----追锁----");
             ImGui::Checkbox("启用断点追锁",&g_Aim.enable); ImGui::SameLine();
             ImGui::Checkbox("陀螺仪辅助",&g_Aim.gyro);
+            ImGui::Checkbox("瞬时弹道",&g_Aim.instant);   // 修复④：main.cpp 逻辑
             ImGui::Text("----触发----");
             ImGui::RadioButton("总是",&g_Aim.trigger,0); ImGui::SameLine();
             ImGui::RadioButton("开火",&g_Aim.trigger,1); ImGui::SameLine();
