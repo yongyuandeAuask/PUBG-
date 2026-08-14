@@ -58,6 +58,9 @@ static volatile bool g_bpSet = false;
 static volatile pid_t g_bpPid = 0;
 static bool g_threadStarted = false;
 
+static Vector3A g_lastZ = {0,0,0};
+static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
+static bool PosOk(const Vector3A& p) { return fabsf(p.X) > 1.0f || fabsf(p.Y) > 1.0f; }
 static Vector3A UnpackHFA(const paradise_hwbp_record& r, int base) {
     const __uint128_t* qs = &r.q0;
     Vector3A v;
