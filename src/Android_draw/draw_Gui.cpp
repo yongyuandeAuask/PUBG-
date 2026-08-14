@@ -603,106 +603,108 @@ static void CB2(const char* label, bool* v) {
 // ==================== 主菜单 ====================
 void Layout_tick_UI(bool* main_thread_flag) {
     UpdateGameData();
-    ApplyMenuStyle();
+    static int style_idx = 1;
+    ImGui::SetNextWindowSize(ImVec2(540, 660), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Asuka追锁 ###AsukaMenu", main_thread_flag);
 
-    static int page = 0;   // 0=绘制 1=追锁 2=系统
-    ImGui::SetNextWindowSize(ImVec2(640, 800), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Asuka追踪 ###AsukaMenu", main_thread_flag);
+    if (::permeate_record_ini) {
+        ImGui::SetWindowPos({LastCoordinate.Pos_x, LastCoordinate.Pos_y});
+        ImGui::SetWindowSize({LastCoordinate.Size_x, LastCoordinate.Size_y});
+        permeate_record_ini = false;
+    }
 
-    // ===== 顶部状态条 =====
-    ImGui::TextColored(ImVec4(0,1,1,1), "断点:%s  目标:%s  触发:%llu  速:%.0f",
+    // 顶部：主题 + 过录制
+    if (ImGui::Combo("##主题", &style_idx, "白色\0蓝色\0紫色\0")) {
+        switch (style_idx) { case 0: ImGui::StyleColorsLight(); break;
+                             case 1: ImGui::StyleColorsDark();  break;
+                             case 2: ImGui::StyleColorsClassic(); break; }
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("过录制", &::permeate_record)) ::permeate_record_ini = true;
+
+    // ★ 初始化按钮：永远在最上面，没初始化也能点（未初始化时红色高亮）
+    if (!初始化) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
+    if (ImGui::Button(初始化 ? "重新初始化(重进游戏点我)" : "初始化绘制",
+                      ImVec2(ImGui::GetContentRegionAvail().x, 46))) {
+        DrawInit();
+    }
+    if (!初始化) ImGui::PopStyleColor();
+
+    ImGui::TextColored(ImVec4(0,1,1,1), "状态:%s | 断点:%s 目标:%s 触发:%llu 速:%.0f",
+        初始化 ? "已初始化" : "未初始化",
         g_bpSet ? "是" : "否", g_Target.valid ? "有" : "无",
         (unsigned long long)g_bpHits, g_BulletSpeed);
-    ImGui::Separator();
 
-    // ===== 顶部翻页 =====
-    {
-        const char* const nav[] = { "绘 制", "追 锁", "系 统" };
-        float w = (ImGui::GetContentRegionAvail().x - 16) / 3;
-        for (int i = 0; i < 3; i++) {
-            if (i) ImGui::SameLine(0, 8);
-            bool on = (page == i);
-            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f,0.55f,1.0f,1.0f));
-            if (ImGui::Button(nav[i], ImVec2(w, 50))) page = i;
-            if (on) ImGui::PopStyleColor();
+    if (ImGui::BeginTabBar("MainTab")) {
+        // ================= 绘制 =================
+        if (ImGui::BeginTabItem("绘制")) {
+            ImGui::Checkbox("显示方框", &DrawIo[1]); ImGui::SameLine(0,30);
+            ImGui::Checkbox("显示射线", &DrawIo[3]); ImGui::SameLine(0,30);
+            ImGui::Checkbox("显示骨骼", &DrawIo[4]);
+            ImGui::Checkbox("显示信息", &DrawIo[5]); ImGui::SameLine(0,30);
+            ImGui::Checkbox("显示血量", &DrawIo[6]); ImGui::SameLine(0,30);
+            ImGui::Checkbox("显示距离", &DrawIo[2]);
+            ImGui::Checkbox("显示载具", &DrawIo[8]); ImGui::SameLine(0,30);
+            ImGui::Checkbox("显示手持", &DrawIo[9]); ImGui::SameLine(0,30);
+            ImGui::Checkbox("敌人地址", &DrawIo[7]);
+            ImGui::Checkbox("忽略人机", &忽略人机); ImGui::SameLine(0,30);
+            ImGui::Checkbox("FOV圈", &g_fovCircle); ImGui::SameLine(0,30);
+            ImGui::Checkbox("动态圈", &g_Aim.dynFov);
+            ImGui::Checkbox("标题描边", &g_titleOutline);
+            ImGui::EndTabItem();
         }
-    }
-    ImGui::Spacing();
-
-    ImGui::BeginChild("##content", ImVec2(0, 0), true);
-
-    if (page == 0) {
-        // ================= 绘制页 =================
-        ImGui::TextDisabled("── 目标显示 ──");
-        ImGui::Columns(2, "esp", false);
-        CB2("方框",   &DrawIo[1]);
-        CB2("骨骼",   &DrawIo[4]);
-        CB2("射线",   &DrawIo[3]);
-        CB2("信息",   &DrawIo[5]);
-        CB2("血量",   &DrawIo[6]);
-        CB2("距离",   &DrawIo[2]);
-        ImGui::NextColumn();
-        CB2("载具",   &DrawIo[8]);
-        CB2("手持",   &DrawIo[9]);
-        CB2("地址",   &DrawIo[7]);
-        CB2("忽略人机", &忽略人机);
-        CB2("标题描边", &g_titleOutline);
-        CB2("FOV圈",  &g_fovCircle);
-        ImGui::Columns(1);
-    }
-    else if (page == 1) {
-        // ================= 追锁页 =================
-        {
-            bool on = g_Aim.enable;
-            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.9f,0.2f,0.2f,1.0f));
-            if (ImGui::Button(on ? "追锁:开" : "追锁:关", ImVec2(-1, 54))) g_Aim.enable = !on;
-            if (on) ImGui::PopStyleColor();
+        // ================= 追踪 =================
+        if (ImGui::BeginTabItem("追踪")) {
+            if (!初始化) ImGui::TextColored(ImVec4(1,0.5f,0.5f,1), "请先点顶部[初始化绘制]");
+            ImGui::Checkbox("启用断点追锁", &g_Aim.enable); ImGui::SameLine(0,30);
+            ImGui::Checkbox("陀螺仪辅助", &g_Aim.gyro); ImGui::SameLine(0,30);
+            ImGui::Checkbox("瞬时弹道", &g_Aim.instant);
+            ImGui::Text("触发:"); ImGui::SameLine();
+            ImGui::RadioButton("总是", &g_Aim.trigger, 0); ImGui::SameLine();
+            ImGui::RadioButton("开火", &g_Aim.trigger, 1); ImGui::SameLine();
+            ImGui::RadioButton("开镜", &g_Aim.trigger, 2);
+            ImGui::Text("部位:"); ImGui::SameLine();
+            ImGui::RadioButton("头", &g_Aim.part, 0); ImGui::SameLine();
+            ImGui::RadioButton("胸", &g_Aim.part, 1); ImGui::SameLine();
+            ImGui::RadioButton("盆骨", &g_Aim.part, 2);
+            ImGui::Checkbox("预判", &g_Aim.predict);
+            if (g_Aim.predict) { ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+                ImGui::SliderFloat("##预判强度", &g_Aim.predScale, 0.0f, 3.0f, "%.2f"); }
+            ImGui::SetNextItemWidth(140); ImGui::SliderFloat("下坠系数", &g_Aim.dropCoef, 0.0f, 1200.0f, "%.0f");
+            ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::SliderFloat("压枪", &g_Aim.recoilComp, 0.0f, 20.0f, "%.1f");
+            if (g_Aim.gyro) {
+                ImGui::SetNextItemWidth(120); ImGui::SliderFloat("陀螺强度", &g_Aim.gyroStrength, 0.01f, 1.0f, "%.2f");
+                ImGui::SameLine(); ImGui::Checkbox("反向", &g_Aim.gyroFlip);
+            }
+            ImGui::Checkbox("概率模式", &g_Aim.prob);
+            if (g_Aim.prob) { ImGui::SameLine(); ImGui::SetNextItemWidth(100);
+                ImGui::SliderFloat("##率", &g_Aim.probRate, 0.05f, 1.0f, "%.2f"); }
+            ImGui::Checkbox("写回自测(抬头60°)", &g_Aim.forceTest);
+            ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("FOV", &g_Aim.fov, 50.0f, 800.0f, "%.0f");
+            if (g_bpSet) { if (ImGui::Button("移除断点")) { driver->hwbp_remove(); g_bpSet = false; } }
+            ImGui::EndTabItem();
         }
-        ImGui::Spacing();
-        ImGui::TextDisabled("── 触发条件 ──");
-        { const char* const t[] = { "总是", "开火", "开镜" }; Segmented(&g_Aim.trigger, t, 3); }
-        ImGui::TextDisabled("── 瞄准部位 ──");
-        { const char* const p[] = { "头部", "胸部", "盆骨" }; Segmented(&g_Aim.part, p, 3); }
-        ImGui::Spacing();
-        ImGui::TextDisabled("── 弹道 ──");
-        ImGui::Checkbox("预判", &g_Aim.predict);
-        if (g_Aim.predict) {
-            ImGui::SameLine(); ImGui::SetNextItemWidth(140);
-            ImGui::SliderFloat("##pred", &g_Aim.predScale, 0.0f, 3.0f, "强度 %.2f");
+        // ================= 系统 =================
+        if (ImGui::BeginTabItem("系统")) {
+            ImGui::SliderFloat("视频大小", &g_videoScale, 0.3f, 1.0f, "%.2f");
+            ImGui::SliderFloat("刷新帧率", &FPS, 60.0f, 144.0f, "%.0f");
+            ImGui::Separator();
+            ImGui::BulletText("进程:%d", pid);
+            ImGui::BulletText("矩阵:%lx", Matrix);
+            ImGui::BulletText("自身结构:%lx", MySelf);
+            ImGui::BulletText("世界:%lx", Arrayaddr);
+            ImGui::BulletText("数量:%d", Count);
+            ImGui::Separator();
+            if (ImGui::Button("隐藏菜单")) g_showMenu = false;
+            ImGui::SameLine();
+            if (ImGui::Button("安全退出")) { driver->hwbp_remove(); exit(0); }
+            ImGui::EndTabItem();
         }
-        ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("下坠系数", &g_Aim.dropCoef, 0.0f, 1200.0f, "%.0f");
-        ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("压枪补偿", &g_Aim.recoilComp, 0.0f, 20.0f, "%.1f");
-        ImGui::TextDisabled("── 范围 ──");
-        ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("FOV", &g_Aim.fov, 50.0f, 800.0f, "%.0f");
-        ImGui::Checkbox("动态圈", &g_Aim.dynFov);
-        ImGui::Checkbox("概率模式", &g_Aim.prob);
-        if (g_Aim.prob) {
-            ImGui::SameLine(); ImGui::SetNextItemWidth(140);
-            ImGui::SliderFloat("##rate", &g_Aim.probRate, 0.05f, 1.0f, "%.2f");
-        }
+        ImGui::EndTabBar();
     }
-    else {
-        // ================= 系统页 =================
-        static int style_idx = 0;
-        ImGui::TextDisabled("── 主题 ──");
-        { const char* const s[] = { "白", "蓝", "紫" }; Segmented(&style_idx, s, 3); }
-        switch (style_idx) { case 0: ImGui::StyleColorsLight(); break; case 1: ImGui::StyleColorsDark(); break; case 2: ImGui::StyleColorsClassic(); break; }
-        ImGui::Spacing();
-        ImGui::Checkbox("过录制", &::permeate_record);
-        if (::permeate_record) ::permeate_record_ini = true;
-        ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("刷新帧率", &FPS, 60.0f, 144.0f, "%.0f");
-        ImGui::Spacing();
-        ImGui::TextDisabled("── 调试 ──");
-        ImGui::BulletText("进程:%d", pid);
-        ImGui::BulletText("矩阵:%lx", Matrix);
-        ImGui::BulletText("自身:%lx", MySelf);
-        ImGui::BulletText("世界:%lx", Arrayaddr);
-        ImGui::BulletText("数量:%d", Count);
-    }
-
-    ImGui::EndChild();
 
     ImGui::TextColored(ImVec4(1,0,1,1), "%.1f FPS", ImGui::GetIO().Framerate);
     g_window = ImGui::GetCurrentWindow();
     ImGui::End();
+    VideoBallUI();   // 视频球放最后，隐藏菜单后靠它再打开
 }
