@@ -32,141 +32,166 @@ struct BoneCache { long obj; int ok; Vector2A p[15]; };
 static BoneCache g_boneCache[64];
 
 // ==================== 追锁配置（弹道参数适配下坠.cpp）====================
+// ==================== 追锁配置 ====================
 static struct {
     bool enable = false;
     int  part = 0;
     int  trigger = 0;
-    bool predict = true;
-    float predScale = 1.0f;     // 预判强度（下坠.cpp NumIo[22]）
-    float dropCoef = 540.0f;    // 下坠系数（下坠.cpp 540*t²）
-    float recoilComp = 0.0f;    // 开火压枪补偿（0=关）
-    bool dynFov = false;        // 动态瞄圈（下坠.cpp DrawIo[25]）
+    bool instant = true;      // 瞬时弹道默认开（= main.cpp 的 aimoSpeed=99999999）
+    bool predict = false;
+    float predScale = 1.0f;
+    float dropCoef = 490.0f;  // cm/s²（½·980）
+    float recoilComp = 0.0f;
+    bool dynFov = false;
     bool prob = false;
     float probRate = 0.8f;
     float fov = 250.0f;
+    bool gyro = false;
+    float gyroStrength = 0.15f;
+    bool gyroFlip = false;
+    bool forceTest = false;
 } g_Aim;
-
 static struct { bool valid = false; Vector3A pos, vel; float screenDist = 0; } g_Target;
-static float g_BulletSpeed = 600.0f;
+static float g_BulletSpeed = 88000.0f;   // cm/s
 static volatile uint64_t g_bpHits = 0;
 static volatile bool g_bpSet = false;
+static volatile pid_t g_bpPid = 0;
+static bool g_threadStarted = false;
 
 static Vector3A UnpackHFA(const paradise_hwbp_record& r, int base) {
     const __uint128_t* qs = &r.q0;
     Vector3A v;
-    v.X = *(const float*)&qs[base + 0];
-    v.Y = *(const float*)&qs[base + 1];
-    v.Z = *(const float*)&qs[base + 2];
+    v.X = *(const float*)&qs[base+0];
+    v.Y = *(const float*)&qs[base+1];
+    v.Z = *(const float*)&qs[base+2];
     return v;
 }
 static void PackHFA(paradise_hwbp_record& r, int base, const Vector3A& v) {
     __uint128_t* qs = &r.q0;
-    *(float*)&qs[base + 0] = v.X;
-    *(float*)&qs[base + 1] = v.Y;
-    *(float*)&qs[base + 2] = v.Z;
+    *(float*)&qs[base+0] = v.X;
+    *(float*)&qs[base+1] = v.Y;
+    *(float*)&qs[base+2] = v.Z;
 }
-
 static void AimFrameBegin() { g_Target.valid = false; g_Target.screenDist = 1e9f; }
 static void AimFeedTarget(const Vector3A& pos, const Vector3A& vel, float sd) {
     if (sd < g_Target.screenDist) { g_Target.valid = true; g_Target.pos = pos; g_Target.vel = vel; g_Target.screenDist = sd; }
 }
-static void AimFeedBulletSpeed(float v) { if (v > 50.0f) g_BulletSpeed = v; }
-static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
+static void AimFeedBulletSpeed(float v) {
+    if (v > 50.0f && v < 2000.0f) v *= 100.0f;  // m/s → cm/s
+    if (v > 50.0f) g_BulletSpeed = v;
+}
 
 // ==================== 追锁线程 ====================
 static void* HwbpAimThread(void*) {
     while (true) {
         if (!初始化 || !libbase || !MySelf) { usleep(50000); continue; }
-        if (!g_Aim.enable) {
-            if (g_bpSet) { driver->hwbp_remove(); g_bpSet = false; }
-            usleep(50000); continue;
-        }
+        if (!g_Aim.enable) { if (g_bpSet){driver->hwbp_remove();g_bpSet=false;} usleep(50000); continue; }
+        if (g_bpSet && g_bpPid != pid) { driver->hwbp_remove(); g_bpSet = false; }  // 重启作废
         if (!g_bpSet) {
-            paradise_hwbp_point_config pt; memset(&pt, 0, sizeof(pt));
-            pt.address = (uint64_t)libbase + 0x6DFE100;
-            pt.type = PARADISE_HWBP_EXECUTE;
-            pt.length = 4;
-            pt.scope = PARADISE_HWBP_ALL_THREADS;
-            g_bpSet = driver->hwbp_set(&pt, 1);
-            if (!g_bpSet) { usleep(100000); continue; }
+            paradise_hwbp_point_config pt; memset(&pt,0,sizeof(pt));
+            pt.address=(uint64_t)libbase+0x6DFE100;
+            pt.type=PARADISE_HWBP_EXECUTE;
+            pt.length=4;
+            pt.scope=PARADISE_HWBP_ALL_THREADS;
+            g_bpSet = driver->hwbp_set(&pt,1);
+            if (g_bpSet) g_bpPid = pid;
+            if(!g_bpSet){usleep(100000);continue;}
+        }
+        bool trigOk = true;
+        if (g_Aim.trigger==1)      trigOk = g_isFiring!=0;
+        else if (g_Aim.trigger==2) trigOk = driver->read<int>(MySelf+0x1134)!=0;
+
+        if (g_Aim.gyro && trigOk && g_Target.valid) {
+            float c = matrix[3]*g_Target.pos.X+matrix[7]*g_Target.pos.Y+matrix[11]*g_Target.pos.Z+matrix[15];
+            if (c>0.001f){
+                float sx = px+(matrix[0]*g_Target.pos.X+matrix[4]*g_Target.pos.Y+matrix[8]*g_Target.pos.Z+matrix[12])/c*px;
+                float sy = py-(matrix[1]*g_Target.pos.X+matrix[5]*g_Target.pos.Y+matrix[9]*g_Target.pos.Z+matrix[13])/c*py;
+                g_aimDs = sqrtf(powf(px-sx,2)+powf(py-sy,2));
+                float gx=(sx-px)*g_Aim.gyroStrength, gy=(sy-py)*g_Aim.gyroStrength;
+                if(g_Aim.gyroFlip){gx=-gx;gy=-gy;}
+                driver->gyro_update(gx,gy);
+            }
         }
 
-        bool trigOk = true;
-        if (g_Aim.trigger == 1)      trigOk = g_isFiring != 0;
-        else if (g_Aim.trigger == 2) trigOk = driver->read<int>(MySelf + 0x1134) != 0;
-
-        paradise_hwbp_record recs[8];
-        uint32_t cnt = 0;
-        if (driver->hwbp_get_records(0, 0, recs, 8, &cnt) && cnt > 0) {
-            for (uint32_t i = 0; i < cnt; i++) {
+        paradise_hwbp_record recs[8]; uint32_t cnt=0;
+        if (driver->hwbp_get_records(0,0,recs,8,&cnt) && cnt>0){
+            for (uint32_t i=0;i<cnt;i++){
                 g_bpHits++;
                 auto& rec = recs[i];
+                memset(rec.mask,0,sizeof(rec.mask));          // 先清掩码
 
-                if (!trigOk || !g_Target.valid) continue;
-                if (g_Aim.prob && ((float)rand()/RAND_MAX) > g_Aim.probRate) continue;
-
-                Vector3A start = UnpackHFA(rec, 0);
-                if (fabsf(start.X) < 1.0f && fabsf(start.Y) < 1.0f) continue;
-
-                // ===== 弹道解算（适配下坠.cpp：预判*强度 + 540*t² + 开火压枪）=====
-                Vector3A aim = g_Target.pos;
-                float dist = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2));
-                float fly = dist / g_BulletSpeed;
-                if (g_Aim.predict) {
-                    aim.X += g_Target.vel.X * fly * g_Aim.predScale;
-                    aim.Y += g_Target.vel.Y * fly * g_Aim.predScale;
-                    aim.Z += g_Target.vel.Z * fly * g_Aim.predScale;
+                bool wantWrite = trigOk && g_Target.valid;
+                if (wantWrite && g_Aim.prob && ((float)rand()/(float)RAND_MAX)>g_Aim.probRate) wantWrite=false;
+                if (wantWrite){
+                    Vector3A start = UnpackHFA(rec,0);
+                    if (fabsf(start.X)<1.0f && fabsf(start.Y)<1.0f) wantWrite=false;
+                    else {
+                        Vector3A aim = g_Target.pos;
+                        float dist = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2)); // cm
+                        float fly = g_Aim.instant ? 0.0f : dist / g_BulletSpeed;   // cm/(cm/s)=秒
+                        if (!g_Aim.instant && g_Aim.predict && fly>0.0f){
+                            aim.X += g_Target.vel.X*fly*g_Aim.predScale;
+                            aim.Y += g_Target.vel.Y*fly*g_Aim.predScale;
+                            aim.Z += g_Target.vel.Z*fly*g_Aim.predScale;
+                        }
+                        if (!g_Aim.instant) aim.Z += g_Aim.dropCoef*fly*fly;
+                        if (g_Aim.recoilComp>0 && g_isFiring) aim.Z -= (dist/100.0f)*g_Aim.recoilComp;
+                        float dx=aim.X-start.X, dy=aim.Y-start.Y, dz=aim.Z-start.Z;
+                        float hyp=sqrtf(dx*dx+dy*dy);
+                        if (hyp < 0.001f) wantWrite=false;
+                        else {
+                            Vector3A rot;
+                            rot.X=atan2f(dz,hyp)*(180.0f/3.14159265f);
+                            if(rot.X<-75)rot.X=-75; if(rot.X>75)rot.X=75;
+                            rot.Y=atan2f(dy,dx)*(180.0f/3.14159265f);
+                            while(rot.Y<-180)rot.Y+=360; while(rot.Y>180)rot.Y-=360;
+                            rot.Z=0;
+                            if (g_Aim.forceTest){rot.X=60;rot.Z=0;}
+                            PackHFA(rec,3,rot);
+                            PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q3,PARADISE_BP_OP_WRITE);
+                            PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q4,PARADISE_BP_OP_WRITE);
+                            PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q5,PARADISE_BP_OP_WRITE);
+                        }
+                    }
                 }
-                aim.Z += g_Aim.dropCoef * fly * fly;
-                if (g_Aim.recoilComp > 0.0f && g_isFiring) {
-                    aim.Z -= (dist / 100.0f) * g_Aim.recoilComp;
-                }
-
-                // ===== 投影点FOV判定（适配下坠.cpp AimDs<=圈 才动手）=====
-                float c = matrix[3]*aim.X + matrix[7]*aim.Y + matrix[11]*aim.Z + matrix[15];
-                float aimDs = 1e9f;
-                if (c > 0.001f) {
-                    float ax = px + (matrix[0]*aim.X + matrix[4]*aim.Y + matrix[8]*aim.Z + matrix[12]) / c * px;
-                    float ay = py - (matrix[1]*aim.X + matrix[5]*aim.Y + matrix[9]*aim.Z + matrix[13]) / c * py;
-                    aimDs = sqrtf(powf(px - ax, 2) + powf(py - ay, 2));
-                }
-                g_aimDs = aimDs;
-                if (aimDs > g_Aim.fov && g_Target.screenDist > g_Aim.fov) continue;
-
-                // ===== 角度写 Q3/Q4/Q5 =====
-                float dx = aim.X-start.X, dy = aim.Y-start.Y, dz = aim.Z-start.Z;
-                float hyp = sqrtf(dx*dx + dy*dy);
-                Vector3A rot;
-                rot.X = atan2f(dz, hyp) * (180.0f/3.14159265f);
-                if (rot.X < -75.0f) rot.X = -75.0f;
-                if (rot.X >  75.0f) rot.X =  75.0f;
-                rot.Y = atan2f(dy, dx) * (180.0f/3.14159265f);
-                while (rot.Y < -180.0f) rot.Y += 360.0f;
-                while (rot.Y >  180.0f) rot.Y -= 360.0f;
-                rot.Z = 0;
-
-                PackHFA(rec, 3, rot);
-                PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q3, PARADISE_BP_OP_WRITE);
-                PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q4, PARADISE_BP_OP_WRITE);
-                PARADISE_BP_SET_MASK(&rec, PARADISE_REG_Q5, PARADISE_BP_OP_WRITE);
-                driver->hwbp_set_record(0, i, &rec);
+                // ★ 致命修复：无论改没改都必须写回，游戏线程才能恢复
+                driver->hwbp_set_record(0,i,&rec);
             }
             driver->hwbp_clear_records(0);
         }
-        usleep(500);
+        usleep(200);
     }
     return nullptr;
 }
 
+// 支持重复初始化（重进游戏再点 = 热更新地址）
 void DrawInit() {
-    if (初始化) return;
-    pid = getPID("com.rekoo.pubgm");
-    if (pid <= 0) { printf("游戏未启动\n"); return; }
-    libbase = getModuleBase("libUE4.so");
-    if (libbase <= 0) { printf("libUE4.so 未找到\n"); return; }
-    初始化 = true;
+    pid_t newPid = getPID("com.rekoo.pubgm");
+    if (newPid <= 0){printf("游戏未启动\n");return;}
+    long newBase = getModuleBase("libUE4.so");
+    if (newBase <= 0){printf("libUE4.so 未找到\n");return;}
+    bool firstTime = !初始化;
+    bool changed = (newPid != pid) || (newBase != libbase);
+    pid = newPid;
+    libbase = newBase;
+    driver->initialize(pid);
+    if (changed && !firstTime) {
+        driver->hwbp_remove();
+        g_bpSet = false; g_bpPid = 0; MySelf = 0;
+    }
+    if (firstTime) {
+        初始化 = true;
+        DrawIo[1]=true; DrawIo[2]=true; DrawIo[3]=true; DrawIo[4]=true; DrawIo[5]=true;
+        driver->hide_process(getpid(), true);
+        char selfPath[128];
+        ssize_t n = readlink("/proc/self/exe", selfPath, sizeof(selfPath)-1);
+        if (n>0){selfPath[n]=0; driver->hide_path(selfPath,true);}
+        if (!g_threadStarted) {
+            pthread_t t; pthread_create(&t,nullptr,HwbpAimThread,nullptr); pthread_detach(t);
+            g_threadStarted = true;
+        }
+    }
     printf("初始化成功! libUE4: %lx, pid: %d\n", libbase, pid);
-    pthread_t t; pthread_create(&t, nullptr, HwbpAimThread, nullptr); pthread_detach(t);
 }
 
 void UpdateGameData() {
@@ -357,11 +382,13 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float W=(r_y-r_w)/2;
         if(W<=0||W>3000)continue;
 
-        // ===== 门控（仿下坠.cpp）：方框与屏幕相交才画；完全在屏外=不画 =====
-        float gL=r_x-W*0.5f, gR=r_x+W*0.5f;
-        float gT=r_y-W,      gB=r_y+W;
-        bool inView = gR>0.0f && gL<(float)abs_ScreenX && gB>0.0f && gT<(float)abs_ScreenY;
-        if(!inView) continue;   // 屏外：方框/骨骼/射线/信息全不画
+        // 射线：不管在不在屏内都画（你要的"没视野也画射线"）
+        if(DrawIo[3]) DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,r_x,r_y-W,nvgRGBA(255,255,255,255),1.0f);
+
+        // 门控：方框/骨骼/信息只在"身体框与屏幕相交"时画；完全屏外=不画；漏半边=画
+        bool inView = (r_x+W*0.6f)>0.0f && (r_x-W*0.6f)<(float)abs_ScreenX &&
+                      (r_y+W)>0.0f   && (r_y-W)<(float)abs_ScreenY;
+        if(!inView) continue;
 
         float MIDDLE=r_x, TOP_FALLBACK=r_y-W, BOTTOM_FALLBACK=r_y+W;
         Vector2A Head,Chest,Pelvis,Left_Shoulder,Right_Shoulder,Left_Elbow,Right_Elbow,
@@ -391,7 +418,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
                     Vector3A wLW=BW(idx_lw),wRW=BW(idx_rw),wLTh=BW(idx_lth),wRTh=BW(idx_rth);
                     Vector3A wLK=BW(idx_lk),wRK=BW(idx_rk),wLA=BW(idx_la),wRA=BW(idx_ra);
                     auto okw=[&](const Vector3A& p){return fabsf(p.X-wPelvisW.X)<300&&fabsf(p.Y-wPelvisW.Y)<300&&fabsf(p.Z-wPelvisW.Z)<300;};
-                    // 只校验世界坐标有效；不要求骨点在屏内 → 漏半边身体也画骨骼（出屏部分自动裁剪）
+                    // 只校验世界坐标有效，不要求骨点全在屏内 → 漏半边也出骨骼
                     if(okw(wHeadW)&&okw(wChestW)&&okw(wLSh)&&okw(wRSh)&&okw(wLElb)&&okw(wRElb)&&okw(wLW)&&okw(wRW)&&
                        okw(wLTh)&&okw(wRTh)&&okw(wLK)&&okw(wRK)&&okw(wLA)&&okw(wRA)){
                         Head=WorldToScreen(wHeadW,matrix,camera); Chest=WorldToScreen(wChestW,matrix,camera);
@@ -426,7 +453,6 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float top=(bonesOk&&Head.Y>0)?(Head.Y-W/5.0f):TOP_FALLBACK;
         float bottom=(bonesOk)?((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y+W/10.0f:Left_Ankle.Y+W/10.0f):BOTTOM_FALLBACK;
         NVGcolor COL_WHITE=nvgRGBA(255,255,255,255), COL_BLACK=nvgRGBA(0,0,0,255);
-        if(DrawIo[3])DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,headX,top,COL_WHITE,1.0f);
         if(DrawIo[1]){
             DrawLineNVG(vg,left,top,right,top,COL_WHITE,1.5f); DrawLineNVG(vg,right,top,right,bottom,COL_WHITE,1.5f);
             DrawLineNVG(vg,right,bottom,left,bottom,COL_WHITE,1.5f); DrawLineNVG(vg,left,bottom,left,top,COL_WHITE,1.5f);
