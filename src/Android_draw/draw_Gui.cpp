@@ -580,9 +580,6 @@ static void ApplyDarkStyle() {
     c[ImGuiCol_CheckMark]     = ImVec4(0.35f,0.65f,1.00f,1.00f);
     c[ImGuiCol_SliderGrab]    = ImVec4(0.35f,0.65f,1.00f,0.90f);
     c[ImGuiCol_SliderGrabActive]=ImVec4(0.50f,0.75f,1.00f,1.00f);
-    c[ImGuiCol_Tab]           = ImVec4(0.12f,0.14f,0.18f,1.00f);
-    c[ImGuiCol_TabHovered]    = ImVec4(0.22f,0.42f,0.70f,0.90f);
-    c[ImGuiCol_TabActive]     = ImVec4(0.18f,0.35f,0.60f,1.00f);
     c[ImGuiCol_Separator]     = ImVec4(0.25f,0.28f,0.34f,0.60f);
 }
 
