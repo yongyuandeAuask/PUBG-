@@ -1,4 +1,4 @@
-// src/Android_draw/draw_Gui.cpp —— 完整版（追踪.h 逻辑移植 + 全部修复，单文件）
+// src/Android_draw/draw_Gui.cpp
 #include "draw.h"
 #include "My_font/zh_Font.h"
 #include "读写.h"
@@ -6,6 +6,7 @@
 #include "绘图.h"
 #include "nanovg.h"
 #include "paradise_api.h"
+
 #include <cstring>
 #include <cstdio>
 #include <cmath>
@@ -25,32 +26,31 @@ static bool g_fovCircle = true;
 static int RealCount = 0;
 static int BotCount = 0;
 static volatile int g_isFiring = 0;
-static volatile int g_ads = 0;
 static volatile float g_aimDs = 0;
-static volatile bool g_weaponBanned = false;
 
-// ==================== 追锁配置（追踪.h 逻辑移植）====================
+struct BoneCache { long obj; int ok; Vector2A p[15]; };
+static BoneCache g_boneCache[64];
+
+// ==================== 追锁配置（弹道参数适配下坠.cpp）====================
+// ==================== 追锁配置 ====================
 static struct {
-    bool enable = false;
-    int  part = 0;
-    int  trigger = 0;        // 0总是 1开镜 2开火 3开火或开镜
-    bool lockHold = true;    // 持续锁定（追踪.h LockedTargetAddr）
-    int  priority = 0;       // 0准心优先 1距离优先
-    bool inBoxAim = false;   // 框内自瞄
-    bool banWeapon = true;   // 武器黑名单（RPG/弓）
-    bool instant = true;     // 瞬时弹道（main.cpp aimoSpeed=99999999）
-    bool predict = true;
-    float predScale = 1.0f;
-    float dropCoef = 540.0f; // cm/s²（下坠.cpp 540*t²）
-    float recoilComp = 0.0f;
-    bool dynFov = false;
-    bool prob = false;
-    float probRate = 0.8f;
-    float fov = 250.0f;
-    bool gyro = false;
-    float gyroStrength = 0.15f;
-    bool gyroFlip = false;
-    bool forceTest = false;
+bool enable = false;
+int  part = 0;
+int  trigger = 0;
+bool instant = true;      // 瞬时弹道默认开
+bool predict = false;
+float predScale = 1.0f;
+float dropCoef = 490.0f;  // cm/s²
+float recoilComp = 0.0f;
+float gunZ = 140.0f;      // ★ 枪口高度补偿(cm)：子弹偏高就调小，偏低就调大
+bool dynFov = false;
+bool prob = false;
+float probRate = 0.8f;
+float fov = 250.0f;
+bool gyro = false;
+float gyroStrength = 0.15f;
+bool gyroFlip = false;
+bool forceTest = false;
 } g_Aim;
 static struct { bool valid = false; Vector3A pos, vel; float screenDist = 0; } g_Target;
 static float g_BulletSpeed = 88000.0f;   // cm/s
@@ -59,13 +59,9 @@ static volatile bool g_bpSet = false;
 static volatile pid_t g_bpPid = 0;
 static bool g_threadStarted = false;
 
-// 候选池（渲染线程填，循环后选）
-struct AimCand { uint64_t addr; Vector3A w, vel; float sd, wd; };
-static AimCand g_cands[64]; static int g_candCount = 0;
-static uint64_t g_lockAddr = 0;
-
+static Vector3A g_lastZ = {0,0,0};
 static bool PtrOk(uint64_t p) { return p > 0x10000000 && p < 0x10000000000; }
-static bool GetWeaponName(long obj, char* out, int outLen);
+static bool PosOk(const Vector3A& p) { return fabsf(p.X) > 1.0f || fabsf(p.Y) > 1.0f; }
 static Vector3A UnpackHFA(const paradise_hwbp_record& r, int base) {
     const __uint128_t* qs = &r.q0;
     Vector3A v;
@@ -80,40 +76,16 @@ static void PackHFA(paradise_hwbp_record& r, int base, const Vector3A& v) {
     *(float*)&qs[base+1] = v.Y;
     *(float*)&qs[base+2] = v.Z;
 }
-static void AimFrameBegin() { g_Target.valid = false; g_Target.screenDist = 1e9f; g_candCount = 0; }
+static void AimFrameBegin() { g_Target.valid = false; g_Target.screenDist = 1e9f; }
+static void AimFeedTarget(const Vector3A& pos, const Vector3A& vel, float sd) {
+    if (sd < g_Target.screenDist) { g_Target.valid = true; g_Target.pos = pos; g_Target.vel = vel; g_Target.screenDist = sd; }
+}
 static void AimFeedBulletSpeed(float v) {
     if (v > 50.0f && v < 2000.0f) v *= 100.0f;  // m/s → cm/s
     if (v > 50.0f) g_BulletSpeed = v;
 }
 
-// ===== 选靶+弹道（追踪.h：锁定优先/优先级/预判*强度*distFactor/下坠）=====
-static void SelectAimTarget() {
-    g_Target.valid = false;
-    if (g_candCount <= 0) { g_lockAddr = 0; return; }
-    int best = -1; float bestVal = 1e9f;
-    for (int i = 0; i < g_candCount; i++) {
-        float val = (g_Aim.priority == 1) ? g_cands[i].wd : g_cands[i].sd;
-        if (g_Aim.lockHold && g_lockAddr && g_cands[i].addr == g_lockAddr) val = 0.01f;
-        if (val > 0 && val < bestVal) { bestVal = val; best = i; }
-    }
-    if (best < 0) { g_lockAddr = 0; return; }
-    g_lockAddr = g_cands[best].addr;
-    Vector3A aimP = g_cands[best].w;
-    float distM = g_cands[best].wd;
-    float fly = g_Aim.instant ? 0.0f : distM / (g_BulletSpeed * 0.01f);  // 秒
-    float distFactor = 1.0f;
-    if (distM > 100.0f) { distFactor = 1.0f - (distM - 100.0f) * 0.002f; if (distFactor < 0.4f) distFactor = 0.4f; }
-    if (!g_Aim.instant && g_Aim.predict && fly > 0.0f) {
-        aimP.X += g_cands[best].vel.X * fly * g_Aim.predScale * distFactor;
-        aimP.Y += g_cands[best].vel.Y * fly * g_Aim.predScale * distFactor;
-        aimP.Z += g_cands[best].vel.Z * fly * g_Aim.predScale * distFactor;
-    }
-    if (!g_Aim.instant) aimP.Z += g_Aim.dropCoef * fly * fly;
-    g_Target.pos = aimP; g_Target.vel = g_cands[best].vel;
-    g_Target.screenDist = g_cands[best].sd; g_Target.valid = true;
-}
-
-// ==================== 追锁线程（修复：无条件写回）====================
+// ==================== 追锁线程 ====================
 static void* HwbpAimThread(void*) {
     while (true) {
         if (!初始化 || !libbase || !MySelf) { usleep(50000); continue; }
@@ -129,18 +101,11 @@ static void* HwbpAimThread(void*) {
             if (g_bpSet) g_bpPid = pid;
             if(!g_bpSet){usleep(100000);continue;}
         }
-        // 触发规则（追踪.h shouldAim）
-        bool shouldAim = false;
-        switch (g_Aim.trigger) {
-            case 0: shouldAim = true; break;
-            case 1: shouldAim = (g_ads != 0); break;
-            case 2: shouldAim = (g_isFiring != 0); break;
-            default: shouldAim = (g_isFiring != 0) || (g_ads != 0); break;
-        }
-        if (g_Aim.banWeapon && g_weaponBanned) shouldAim = false;
-        if (!shouldAim) g_lockAddr = 0;
+        bool trigOk = true;
+        if (g_Aim.trigger==1)      trigOk = g_isFiring!=0;
+        else if (g_Aim.trigger==2) trigOk = driver->read<int>(MySelf+0x1134)!=0;
 
-        if (g_Aim.gyro && shouldAim && g_Target.valid) {
+        if (g_Aim.gyro && trigOk && g_Target.valid) {
             float c = matrix[3]*g_Target.pos.X+matrix[7]*g_Target.pos.Y+matrix[11]*g_Target.pos.Z+matrix[15];
             if (c>0.001f){
                 float sx = px+(matrix[0]*g_Target.pos.X+matrix[4]*g_Target.pos.Y+matrix[8]*g_Target.pos.Z+matrix[12])/c*px;
@@ -154,41 +119,46 @@ static void* HwbpAimThread(void*) {
 
         paradise_hwbp_record recs[8]; uint32_t cnt=0;
         if (driver->hwbp_get_records(0,0,recs,8,&cnt) && cnt>0){
+            // ★ 每批读一次自身坐标做射击原点（Q0-Q2 是随视角动的落点，不能当原点）
+            Vector3A own;
+            driver->read((uintptr_t)(driver->read<uint64_t>(MySelf+0x208)+0x1c8), &own, sizeof(own));
+            bool ownOk = PosOk(own);
             for (uint32_t i=0;i<cnt;i++){
                 g_bpHits++;
                 auto& rec = recs[i];
                 memset(rec.mask,0,sizeof(rec.mask));
-                bool wantWrite = shouldAim && g_Target.valid;
+                bool wantWrite = trigOk && g_Target.valid && ownOk;
                 if (wantWrite && g_Aim.prob && ((float)rand()/(float)RAND_MAX)>g_Aim.probRate) wantWrite=false;
                 if (wantWrite){
-                    Vector3A start = UnpackHFA(rec,0);
-                    if (fabsf(start.X)<1.0f && fabsf(start.Y)<1.0f) wantWrite=false;
+                    Vector3A start = own; start.Z += g_Aim.gunZ;
+                    Vector3A aim = g_Target.pos;
+                    float dist = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2));
+                    float fly = g_Aim.instant ? 0.0f : dist / g_BulletSpeed;
+                    if (!g_Aim.instant && g_Aim.predict && fly>0.0f){
+                        aim.X += g_Target.vel.X*fly*g_Aim.predScale;
+                        aim.Y += g_Target.vel.Y*fly*g_Aim.predScale;
+                        aim.Z += g_Target.vel.Z*fly*g_Aim.predScale;
+                    }
+                    if (!g_Aim.instant) aim.Z += g_Aim.dropCoef*fly*fly;
+                    if (g_Aim.recoilComp>0 && g_isFiring) aim.Z -= (dist/100.0f)*g_Aim.recoilComp;
+                    float dx=aim.X-start.X, dy=aim.Y-start.Y, dz=aim.Z-start.Z;
+                    float hyp=sqrtf(dx*dx+dy*dy);
+                    if (hyp < 0.001f) wantWrite=false;
                     else {
-                        Vector3A aim = g_Target.pos;
-                        if (g_Aim.recoilComp>0.0f && g_isFiring){
-                            float d0 = sqrtf(powf(aim.X-start.X,2)+powf(aim.Y-start.Y,2)+powf(aim.Z-start.Z,2));
-                            aim.Z -= (d0/100.0f)*g_Aim.recoilComp;
-                        }
-                        float dx=aim.X-start.X, dy=aim.Y-start.Y, dz=aim.Z-start.Z;
-                        float hyp=sqrtf(dx*dx+dy*dy);
-                        if (hyp < 0.001f) wantWrite=false;
-                        else {
-                            Vector3A rot;
-                            rot.X=atan2f(dz,hyp)*(180.0f/3.14159265f);
-                            if(rot.X<-75)rot.X=-75; if(rot.X>75)rot.X=75;
-                            rot.Y=atan2f(dy,dx)*(180.0f/3.14159265f);
-                            while(rot.Y<-180)rot.Y+=360; while(rot.Y>180)rot.Y-=360;
-                            rot.Z=0;
-                            if (g_Aim.forceTest){rot.X=60;rot.Z=0;}
-                            PackHFA(rec,3,rot);
-                            PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q3,PARADISE_BP_OP_WRITE);
-                            PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q4,PARADISE_BP_OP_WRITE);
-                            PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q5,PARADISE_BP_OP_WRITE);
-                        }
+                        Vector3A rot;
+                        rot.X=atan2f(dz,hyp)*(180.0f/3.14159265f);
+                        if(rot.X<-75)rot.X=-75; if(rot.X>75)rot.X=75;
+                        rot.Y=atan2f(dy,dx)*(180.0f/3.14159265f);
+                        while(rot.Y<-180)rot.Y+=360; while(rot.Y>180)rot.Y-=360;
+                        rot.Z=0;
+                        if (g_Aim.forceTest){rot.X=60;rot.Z=0;}
+                        PackHFA(rec,3,rot);
+                        PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q3,PARADISE_BP_OP_WRITE);
+                        PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q4,PARADISE_BP_OP_WRITE);
+                        PARADISE_BP_SET_MASK(&rec,PARADISE_REG_Q5,PARADISE_BP_OP_WRITE);
                     }
                 }
-                // ★ 致命修复：无论改没改都必须写回，游戏线程才能恢复
-                driver->hwbp_set_record(0,i,&rec);
+                driver->hwbp_set_record(0,i,&rec);   // 无论改没改都写回
             }
             driver->hwbp_clear_records(0);
         }
@@ -197,6 +167,7 @@ static void* HwbpAimThread(void*) {
     return nullptr;
 }
 
+// 支持重复初始化（重进游戏再点 = 热更新地址）
 void DrawInit() {
     pid_t newPid = getPID("com.rekoo.pubgm");
     if (newPid <= 0){printf("游戏未启动\n");return;}
@@ -207,9 +178,17 @@ void DrawInit() {
     pid = newPid;
     libbase = newBase;
     driver->initialize(pid);
-    if (changed && !firstTime) { driver->hwbp_remove(); g_bpSet=false; g_bpPid=0; MySelf=0; g_lockAddr=0; }
+    if (changed && !firstTime) {
+        driver->hwbp_remove();
+        g_bpSet = false; g_bpPid = 0; MySelf = 0;
+    }
     if (firstTime) {
         初始化 = true;
+        DrawIo[1]=true; DrawIo[2]=true; DrawIo[3]=true; DrawIo[4]=true; DrawIo[5]=true;
+        driver->hide_process(getpid(), true);
+        char selfPath[128];
+        ssize_t n = readlink("/proc/self/exe", selfPath, sizeof(selfPath)-1);
+        if (n>0){selfPath[n]=0; driver->hide_path(selfPath,true);}
         if (!g_threadStarted) {
             pthread_t t; pthread_create(&t,nullptr,HwbpAimThread,nullptr); pthread_detach(t);
             g_threadStarted = true;
@@ -226,74 +205,84 @@ void UpdateGameData() {
     Arrayaddr = driver->read<uint64_t>(Uleve + 0xA0);
     Count = driver->read<int>(Uleve + 0xA8);
     MySelf = driver->read<uint64_t>(
-        driver->read<uint64_t>(driver->read<uint64_t>(driver->read<uint64_t>(
-            driver->read<uint64_t>(driver->read<uint64_t>(libbase + 0xf1fb900) + 0x810)
-            + 0x78) + 0x38) + 0x78) + 0x30) + 0x28c8;
+        driver->read<uint64_t>(
+            driver->read<uint64_t>(
+                driver->read<uint64_t>(
+                    driver->read<uint64_t>(
+                        driver->read<uint64_t>(
+                            driver->read<uint64_t>(libbase + 0xf1fb900) + 0x810
+                        ) + 0x78
+                    ) + 0x38
+                ) + 0x78
+            ) + 0x30
+        ) + 0x28c8
+    );
     类地址 = driver->read<uint64_t>(driver->read<uint64_t>(libbase + 0xec73720) + 0x110);
-    memset(matrix,0,16);
-    driver->read((uintptr_t)Matrix, matrix, 16*4);
+    memset(matrix, 0, 16);
+    driver->read((uintptr_t)Matrix, matrix, 16 * 4);
+
     g_isFiring = driver->read<int>(MySelf + 0x1830);
-    g_ads = driver->read<int>(MySelf + 0x1134);
-    {
-        static int wTick = 0;
-        if ((wTick++ & 31) == 0) {
-            char wn[48]="";
-            long a=driver->read<uint64_t>(MySelf + 0x2608);
-            long b=PtrOk((uint64_t)a)?driver->read<uint64_t>(a + 0x5D8):0;
-            long c=PtrOk((uint64_t)b)?driver->read<uint64_t>(b + 0x1e0):0;
-            if (PtrOk((uint64_t)c)) GetWeaponName(c, wn, sizeof(wn));
-            g_weaponBanned = (strstr(wn,"RPG")||strstr(wn,"Bow")||strstr(wn,"Explosive"));
-        }
-    }
+
     long wq1 = driver->read<uint64_t>(MySelf + 0x2608);
     if (PtrOk((uint64_t)wq1)) {
         long wq2 = driver->read<uint64_t>(wq1 + 0x5D8);
         if (PtrOk((uint64_t)wq2)) {
             float bs = driver->read<float>(wq2 + 0x560);
+            if (bs > 10000) bs *= 0.01f;
             AimFeedBulletSpeed(bs);
         }
     }
 }
 
-static void SetFontNVG(NVGcontext* vg, int fontId){ nvgFontFaceId(vg,fontId); if(fontId==g_font_agency&&g_nvg_font>=0)nvgAddFallbackFont(vg,"agency","zh"); }
-static float UI_SCALE(){ return (float)abs_ScreenY/1080.0f; }
-static void TextDrawScaled(NVGcontext* vg,float x,float y,float sx,const char* t){ nvgSave(vg);nvgTranslate(vg,x,y);nvgScale(vg,sx,1.0f);nvgText(vg,0,0,t,NULL);nvgRestore(vg); }
-static void DrawSoftTextNVG(NVGcontext* vg,int fontId,const char* text,Vector2A pos,float fontSize,NVGcolor color,bool isCenter=true){
-    if(!vg||!text||fontId<0)return;
-    float fs=fontSize*UI_SCALE(); nvgFontSize(vg,fs); SetFontNVG(vg,fontId);
-    nvgTextLetterSpacing(vg,fs*0.02f);
-    nvgTextAlign(vg,(isCenter?NVG_ALIGN_CENTER:NVG_ALIGN_LEFT)|NVG_ALIGN_MIDDLE);
-    float y=pos.Y+fs*0.06f;
-    nvgFontBlur(vg,4.0f); nvgFillColor(vg,nvgRGBA(0,0,0,180));
-    TextDrawScaled(vg,pos.X,y+fs*0.06f,1.06f,text);
-    nvgFontBlur(vg,0);
-    float o=fs*0.04f+0.6f;
-    nvgFillColor(vg,nvgRGBA(0,0,0,255));
-    TextDrawScaled(vg,pos.X-o,y-o,1.06f,text); TextDrawScaled(vg,pos.X+o,y-o,1.06f,text);
-    TextDrawScaled(vg,pos.X-o,y+o,1.06f,text); TextDrawScaled(vg,pos.X+o,y+o,1.06f,text);
-    nvgFillColor(vg,color); TextDrawScaled(vg,pos.X,y,1.06f,text);
-    nvgTextLetterSpacing(vg,0);
+static void SetFontNVG(NVGcontext* vg, int fontId) {
+    nvgFontFaceId(vg, fontId);
+    if (fontId == g_font_agency && g_nvg_font >= 0) nvgAddFallbackFont(vg, "agency", "zh");
 }
-void DrawOutlinedTextNVG(NVGcontext* vg,int fontId,const char* text,Vector2A pos,float fontSize,NVGcolor color,NVGcolor outlineColor,bool isCenter=false,float outlineWidth=1.0f){
-    if(!vg||!text||fontId<0)return;
-    nvgFontSize(vg,fontSize); SetFontNVG(vg,fontId);
-    nvgTextAlign(vg,(isCenter?NVG_ALIGN_CENTER:NVG_ALIGN_LEFT)|NVG_ALIGN_TOP);
-    nvgFillColor(vg,outlineColor);
-    const float o=outlineWidth;
-    nvgText(vg,pos.X-o,pos.Y-o,text,NULL); nvgText(vg,pos.X+o,pos.Y-o,text,NULL);
-    nvgText(vg,pos.X-o,pos.Y+o,text,NULL); nvgText(vg,pos.X+o,pos.Y+o,text,NULL);
-    nvgFillColor(vg,color); nvgText(vg,pos.X,pos.Y,text,NULL);
+static float UI_SCALE() { return (float)abs_ScreenY / 1080.0f; }
+static void TextDrawScaled(NVGcontext* vg, float x, float y, float sx, const char* text) {
+    nvgSave(vg); nvgTranslate(vg, x, y); nvgScale(vg, sx, 1.0f); nvgText(vg, 0, 0, text, NULL); nvgRestore(vg);
 }
-static void DrawLineNVG(NVGcontext* vg,float x1,float y1,float x2,float y2,NVGcolor color,float thickness=1.5f){
-    if(!vg)return; nvgBeginPath(vg); nvgMoveTo(vg,x1,y1); nvgLineTo(vg,x2,y2);
-    nvgStrokeColor(vg,color); nvgStrokeWidth(vg,thickness); nvgStroke(vg);
+static void DrawSoftTextNVG(NVGcontext* vg, int fontId, const char* text, Vector2A pos, float fontSize, NVGcolor color, bool isCenter = true) {
+    if (!vg || !text || fontId < 0) return;
+    float fs = fontSize * UI_SCALE();
+    nvgFontSize(vg, fs); SetFontNVG(vg, fontId);
+    nvgTextLetterSpacing(vg, fs * 0.02f);
+    nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_MIDDLE);
+    float y = pos.Y + fs * 0.06f;
+    nvgFontBlur(vg, 4.0f); nvgFillColor(vg, nvgRGBA(0,0,0,180));
+    TextDrawScaled(vg, pos.X, y + fs*0.06f, 1.06f, text);
+    nvgFontBlur(vg, 0.0f);
+    float o = fs * 0.04f + 0.6f;
+    nvgFillColor(vg, nvgRGBA(0,0,0,255));
+    TextDrawScaled(vg, pos.X-o, y-o, 1.06f, text); TextDrawScaled(vg, pos.X+o, y-o, 1.06f, text);
+    TextDrawScaled(vg, pos.X-o, y+o, 1.06f, text); TextDrawScaled(vg, pos.X+o, y+o, 1.06f, text);
+    nvgFillColor(vg, color);
+    TextDrawScaled(vg, pos.X, y, 1.06f, text);
+    nvgTextLetterSpacing(vg, 0.0f);
 }
-static void DrawHexagonStarNVG(NVGcontext* vg,float x,float y,float size,float rotation,float thickness=1.5f){
-    if(!vg)return;
-    NVGcolor white=nvgRGBA(255,255,255,255), black=nvgRGBA(0,0,0,255);
-    float ptx[6],pty[6];
-    for(int i=0;i<6;i++){float a=rotation+2.0f*NVG_PI*i/6.0f; ptx[i]=x+size*cosf(a); pty[i]=y+size*sinf(a);}
-    float bt=thickness+2.0f;
+void DrawOutlinedTextNVG(NVGcontext* vg, int fontId, const char* text, Vector2A pos, float fontSize,
+                         NVGcolor color, NVGcolor outlineColor, bool isCenter = false, float outlineWidth = 1.0f) {
+    if (!vg || !text || fontId < 0) return;
+    nvgFontSize(vg, fontSize); SetFontNVG(vg, fontId);
+    nvgTextAlign(vg, (isCenter ? NVG_ALIGN_CENTER : NVG_ALIGN_LEFT) | NVG_ALIGN_TOP);
+    nvgFillColor(vg, outlineColor);
+    const float o = outlineWidth;
+    nvgText(vg, pos.X-o, pos.Y-o, text, NULL); nvgText(vg, pos.X+o, pos.Y-o, text, NULL);
+    nvgText(vg, pos.X-o, pos.Y+o, text, NULL); nvgText(vg, pos.X+o, pos.Y+o, text, NULL);
+    nvgFillColor(vg, color);
+    nvgText(vg, pos.X, pos.Y, text, NULL);
+}
+static void DrawLineNVG(NVGcontext* vg, float x1, float y1, float x2, float y2, NVGcolor color, float thickness = 1.5f) {
+    if (!vg) return;
+    nvgBeginPath(vg); nvgMoveTo(vg, x1, y1); nvgLineTo(vg, x2, y2);
+    nvgStrokeColor(vg, color); nvgStrokeWidth(vg, thickness); nvgStroke(vg);
+}
+static void DrawHexagonStarNVG(NVGcontext* vg, float x, float y, float size, float rotation, float thickness = 1.5f) {
+    if (!vg) return;
+    NVGcolor white = nvgRGBA(255,255,255,255), black = nvgRGBA(0,0,0,255);
+    float ptx[6], pty[6];
+    for (int i = 0; i < 6; i++) { float a = rotation + 2.0f*NVG_PI*i/6.0f; ptx[i]=x+size*cosf(a); pty[i]=y+size*sinf(a); }
+    float bt = thickness + 2.0f;
     DrawLineNVG(vg,ptx[0],pty[0],ptx[2],pty[2],black,bt); DrawLineNVG(vg,ptx[2],pty[2],ptx[4],pty[4],black,bt);
     DrawLineNVG(vg,ptx[4],pty[4],ptx[0],pty[0],black,bt); DrawLineNVG(vg,ptx[1],pty[1],ptx[3],pty[3],black,bt);
     DrawLineNVG(vg,ptx[3],pty[3],ptx[5],pty[5],black,bt); DrawLineNVG(vg,ptx[5],pty[5],ptx[1],pty[1],black,bt);
@@ -301,19 +290,25 @@ static void DrawHexagonStarNVG(NVGcontext* vg,float x,float y,float size,float r
     DrawLineNVG(vg,ptx[4],pty[4],ptx[0],pty[0],white,thickness); DrawLineNVG(vg,ptx[1],pty[1],ptx[3],pty[3],white,thickness);
     DrawLineNVG(vg,ptx[3],pty[3],ptx[5],pty[5],white,thickness); DrawLineNVG(vg,ptx[5],pty[5],ptx[1],pty[1],white,thickness);
 }
-static void DrawLogoNVG(NVGcontext* vg,float x,float y,float size){ static float r=0; r+=0.05f; DrawHexagonStarNVG(vg,x,y,size,r,1.5f); }
-static bool GetWeaponName(long obj,char* out,int outLen){
-    if(!PtrOk((uint64_t)obj))return false;
-    int wID=driver->read<int>(obj+24);
-    long wEntry=driver->read<uint64_t>(driver->read<uint64_t>(类地址+(wID/0x4000)*0x8)+(wID%0x4000)*0x8);
-    if(!PtrOk((uint64_t)wEntry))return false;
-    char wName[64]=""; driver->read((uintptr_t)(wEntry+0xC),wName,64);
-    char* p=strstr(wName,"Weap"); if(!p)p=strstr(wName,"BP_"); if(!p)p=strstr(wName,"Gun"); if(!p)return false;
-    strncpy(out,p,outLen-1); out[outLen-1]=0;
-    char* us=strstr(out,"_C"); if(us)*us=0;
-    return out[0]!=0;
+static void DrawLogoNVG(NVGcontext* vg, float x, float y, float size) {
+    static float rotation = 0.0f; rotation += 0.05f;
+    DrawHexagonStarNVG(vg, x, y, size, rotation, 1.5f);
 }
-
+static bool GetWeaponName(long obj, char* out, int outLen) {
+    if (!PtrOk((uint64_t)obj)) return false;
+    int wID = driver->read<int>(obj + 24);
+    long wEntry = driver->read<uint64_t>(driver->read<uint64_t>(类地址 + (wID/0x4000)*0x8) + (wID%0x4000)*0x8);
+    if (!PtrOk((uint64_t)wEntry)) return false;
+    char wName[64] = "";
+    driver->read((uintptr_t)(wEntry + 0xC), wName, 64);
+    char* p = strstr(wName, "Weap");
+    if (!p) p = strstr(wName, "BP_");
+    if (!p) p = strstr(wName, "Gun");
+    if (!p) return false;
+    strncpy(out, p, outLen - 1); out[outLen-1] = 0;
+    char* us = strstr(out, "_C"); if (us) *us = 0;
+    return out[0] != 0;
+}
 void DrawPlayerNVG(NVGcontext* vg) {
     if (!初始化 || MySelf==0 || vg==nullptr) return;
     int 自己队伍=driver->read<int>(MySelf+0x998);
@@ -389,15 +384,15 @@ void DrawPlayerNVG(NVGcontext* vg) {
         float r_w=py-(matrix[1]*D.X+matrix[5]*D.Y+matrix[9]*(D.Z+205)+matrix[13])/camera*py;
         float W=(r_y-r_w)/2;
         if(W<=0||W>3000)continue;
-        // 框内自瞄（追踪.h）：准心不在框内 → 不收候选
-        if (g_Aim.inBoxAim) {
-            float bL=r_x-W*0.5f, bR=r_x+W*0.5f, bT=r_y-W, bB=r_y+W;
-            if (!(px>=bL&&px<=bR&&py>=bT&&py<=bB)) continue;
-        }
-        float gL=r_x-W*0.5f, gR=r_x+W*0.5f;
-        float gT=r_y-W,      gB=r_y+W;
-        bool inView = gR>0.0f && gL<(float)abs_ScreenX && gB>0.0f && gT<(float)abs_ScreenY;
+
+        // 射线：不管在不在屏内都画（你要的"没视野也画射线"）
+        if(DrawIo[3]) DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,r_x,r_y-W,nvgRGBA(255,255,255,255),1.0f);
+
+        // 门控：方框/骨骼/信息只在"身体框与屏幕相交"时画；完全屏外=不画；漏半边=画
+        bool inView = (r_x+W*0.6f)>0.0f && (r_x-W*0.6f)<(float)abs_ScreenX &&
+                      (r_y+W)>0.0f   && (r_y-W)<(float)abs_ScreenY;
         if(!inView) continue;
+
         float MIDDLE=r_x, TOP_FALLBACK=r_y-W, BOTTOM_FALLBACK=r_y+W;
         Vector2A Head,Chest,Pelvis,Left_Shoulder,Right_Shoulder,Left_Elbow,Right_Elbow,
                  Left_Wrist,Right_Wrist,Left_Thigh,Right_Thigh,Left_Knee,Right_Knee,Left_Ankle,Right_Ankle;
@@ -426,6 +421,7 @@ void DrawPlayerNVG(NVGcontext* vg) {
                     Vector3A wLW=BW(idx_lw),wRW=BW(idx_rw),wLTh=BW(idx_lth),wRTh=BW(idx_rth);
                     Vector3A wLK=BW(idx_lk),wRK=BW(idx_rk),wLA=BW(idx_la),wRA=BW(idx_ra);
                     auto okw=[&](const Vector3A& p){return fabsf(p.X-wPelvisW.X)<300&&fabsf(p.Y-wPelvisW.Y)<300&&fabsf(p.Z-wPelvisW.Z)<300;};
+                    // 只校验世界坐标有效，不要求骨点全在屏内 → 漏半边也出骨骼
                     if(okw(wHeadW)&&okw(wChestW)&&okw(wLSh)&&okw(wRSh)&&okw(wLElb)&&okw(wRElb)&&okw(wLW)&&okw(wRW)&&
                        okw(wLTh)&&okw(wRTh)&&okw(wLK)&&okw(wRK)&&okw(wLA)&&okw(wRA)){
                         Head=WorldToScreen(wHeadW,matrix,camera); Chest=WorldToScreen(wChestW,matrix,camera);
@@ -438,17 +434,16 @@ void DrawPlayerNVG(NVGcontext* vg) {
                         Left_Ankle=WorldToScreen(wLA,matrix,camera); Right_Ankle=WorldToScreen(wRA,matrix,camera);
                         bonesOk=true;
                         float bh=((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y:Left_Ankle.Y)-(Head.Y-W/5.0f);
-                        if(bh>6.0f*W||bh<0.5f*W)bonesOk=false;
+                        if(bh>6.0f*W||bh<0.5f*W)bonesOk=false;   // 拉伸坏帧不画
                         if(bonesOk){
                             Vector2A partSc=(g_Aim.part==0)?Head:((g_Aim.part==1)?Chest:Pelvis);
                             Vector3A partW=(g_Aim.part==0)?wHeadW:((g_Aim.part==1)?wChestW:wPelvisW);
                             float sd=sqrtf(powf(partSc.X-px,2)+powf(partSc.Y-py,2));
-                            if(sd<g_Aim.fov && g_candCount<64){
+                            if(sd<g_Aim.fov){
                                 Vector3A vel; memset(&vel,0,sizeof(vel));
                                 long vp=driver->read<uint64_t>(Objaddr+0x208);
                                 if(PtrOk((uint64_t)vp))driver->read(vp+0x2C0,&vel,sizeof(vel));
-                                AimCand& c=g_cands[g_candCount++];
-                                c.addr=(uint64_t)Objaddr; c.w=partW; c.vel=vel; c.sd=sd; c.wd=Distance;
+                                AimFeedTarget(partW,vel,sd);
                             }
                         }
                     }
@@ -456,11 +451,11 @@ void DrawPlayerNVG(NVGcontext* vg) {
             }
         }
         float headX=(bonesOk&&Head.X>0)?Head.X:MIDDLE;
+        float headY=(bonesOk&&Head.Y>0)?Head.Y:TOP_FALLBACK;
         float left=headX-W*0.6f, right=headX+W*0.6f;
         float top=(bonesOk&&Head.Y>0)?(Head.Y-W/5.0f):TOP_FALLBACK;
         float bottom=(bonesOk)?((Left_Ankle.Y<Right_Ankle.Y)?Right_Ankle.Y+W/10.0f:Left_Ankle.Y+W/10.0f):BOTTOM_FALLBACK;
         NVGcolor COL_WHITE=nvgRGBA(255,255,255,255), COL_BLACK=nvgRGBA(0,0,0,255);
-        if(DrawIo[3])DrawLineNVG(vg,(float)abs_ScreenX*0.5f,73.0f,headX,top,COL_WHITE,1.0f);
         if(DrawIo[1]){
             DrawLineNVG(vg,left,top,right,top,COL_WHITE,1.5f); DrawLineNVG(vg,right,top,right,bottom,COL_WHITE,1.5f);
             DrawLineNVG(vg,right,bottom,left,bottom,COL_WHITE,1.5f); DrawLineNVG(vg,left,bottom,left,top,COL_WHITE,1.5f);
@@ -483,257 +478,211 @@ void DrawPlayerNVG(NVGcontext* vg) {
             DrawLineNVG(vg,Left_Knee.X,Left_Knee.Y,Left_Ankle.X,Left_Ankle.Y,COL_WHITE,1.5f);
             DrawLineNVG(vg,Right_Knee.X,Right_Knee.Y,Right_Ankle.X,Right_Ankle.Y,COL_WHITE,1.5f);
         }
-        if(DrawIo[2]){
-            char distBuf[16]; snprintf(distBuf,sizeof(distBuf),"%d m",(int)Distance);
-            float yPos=bottom+6; if(yPos>(float)abs_ScreenY-25)yPos=(float)abs_ScreenY-25;
-            DrawOutlinedTextNVG(vg,g_font_agency,distBuf,{headX,yPos},25.0f,COL_WHITE,COL_BLACK,true,1.0f);
-        }
         if(DrawIo[5]){
-            char tagBuf[96];
-            if(isBot)snprintf(tagBuf,sizeof(tagBuf),"[%d] 人机",敌人队伍);
-            else{getUTF8(PlayerName,driver->read<uint64_t>(Objaddr+0x960));snprintf(tagBuf,sizeof(tagBuf),"[%d] %s",敌人队伍,PlayerName);}
-            float yPos=top-24; if(yPos<0)yPos=0;
-            DrawOutlinedTextNVG(vg,g_font_agency,tagBuf,{headX,yPos},18.0f,COL_WHITE,COL_BLACK,true,1.0f);
-        }
-        if(DrawIo[9]){
-            char clean[48]="";
-            long wq1=driver->read<uint64_t>(Objaddr+0x2608);
-            if(PtrOk((uint64_t)wq1)){
-                long wq2=driver->read<uint64_t>(wq1+0x5D8);
-                long cands[3]={0,0,0};
-                if(PtrOk((uint64_t)wq2)){
-                    cands[0]=wq2;
-                    cands[1]=driver->read<uint64_t>(wq2+0x1e0);
-                    long ent=driver->read<uint64_t>(wq1+0x1370);
-                    if(PtrOk((uint64_t)ent)){
-                        long cw=driver->read<uint64_t>(ent+0x5D8);
-                        if(PtrOk((uint64_t)cw))cands[2]=driver->read<uint64_t>(cw+0x1e0);
-                    }
-                }
-                for(int c=0;c<3&&!clean[0];c++){
-                    if(PtrOk((uint64_t)cands[c]))GetWeaponName(cands[c],clean,sizeof(clean));
-                }
-            }
-            if(clean[0]){
-                float wy=top-44; if(wy<0)wy=0;
-                DrawOutlinedTextNVG(vg,g_font_agency,clean,{headX,wy},16.0f,COL_WHITE,COL_BLACK,true,1.0f);
-            }
-        }
-        if(DrawIo[7]){
-            char buf[32]; sprintf(buf,"0x%lx",Objaddr);
-            DrawOutlinedTextNVG(vg,g_font_agency,buf,{headX,bottom},16.0f,COL_WHITE,COL_BLACK,true,1.0f);
-        }
-        if(DrawIo[6]){
             float CurHP=当前血量, MaxHP=最大血量;
             if(MaxHP<=0)MaxHP=100.0f;
             if(CurHP<0)CurHP=0; if(CurHP>MaxHP)CurHP=MaxHP;
             int hp_percent=(int)(CurHP/MaxHP*100);
-            float cx2=headX, cy2=top-56.0f;
+            float cx2=headX, cy2=top-70.0f;
             nvgBeginPath(vg);
             nvgArc(vg,cx2,cy2,24.0f,-NVG_PI/2.0f,-NVG_PI/2.0f+2.0f*NVG_PI*(CurHP/MaxHP),NVG_CW);
             nvgStrokeColor(vg,COL_WHITE); nvgStrokeWidth(vg,4.0f); nvgLineCap(vg,NVG_ROUND); nvgStroke(vg);
             char hpBuf[8]; snprintf(hpBuf,sizeof(hpBuf),"%d%%",hp_percent);
             DrawOutlinedTextNVG(vg,g_font_agency,hpBuf,{cx2,cy2-6.0f},13.0f,COL_WHITE,COL_BLACK,true,1.0f);
+            char wline[96]="";
+            long wq1=driver->read<uint64_t>(Objaddr+0x2608);
+            if(PtrOk((uint64_t)wq1)){
+                long wq2=driver->read<uint64_t>(wq1+0x5D8);
+                if(PtrOk((uint64_t)wq2)){
+                    long wq3=driver->read<uint64_t>(wq2+0x1e0);
+                    int curB=0,maxB=0;
+                    if(PtrOk((uint64_t)wq3)){curB=driver->read<int>(wq3+0x1018);maxB=driver->read<int>(wq3+0x1030);}
+                    char clean[48]="";
+                    if(!GetWeaponName(wq3,clean,sizeof(clean)))GetWeaponName(wq2,clean,sizeof(clean));
+                    if(clean[0]&&maxB>0)snprintf(wline,sizeof(wline),"%s %d/%d",clean,curB,maxB);
+                    else if(clean[0])snprintf(wline,sizeof(wline),"%s",clean);
+                    else if(maxB>0)snprintf(wline,sizeof(wline),"%d/%d",curB,maxB);
+                }
+            }
+            if(wline[0])DrawOutlinedTextNVG(vg,g_font_agency,wline,{headX,top-40.0f},16.0f,COL_WHITE,COL_BLACK,true,1.0f);
+            char tagBuf[96];
+            if(isBot)snprintf(tagBuf,sizeof(tagBuf),"[%d] 人机",敌人队伍);
+            else{getUTF8(PlayerName,driver->read<uint64_t>(Objaddr+0x960));snprintf(tagBuf,sizeof(tagBuf),"[%d] %s",敌人队伍,PlayerName);}
+            float ty=top-22.0f; if(ty<0)ty=0;
+            DrawOutlinedTextNVG(vg,g_font_agency,tagBuf,{headX,ty},18.0f,COL_WHITE,COL_BLACK,true,1.0f);
+            char distBuf[16]; snprintf(distBuf,sizeof(distBuf),"%d m",(int)Distance);
+            float dy2=bottom+6; if(dy2>(float)abs_ScreenY-25)dy2=(float)abs_ScreenY-25;
+            DrawOutlinedTextNVG(vg,g_font_agency,distBuf,{headX,dy2},25.0f,COL_WHITE,COL_BLACK,true,1.0f);
         }
     }
-    SelectAimTarget();
 }
 
 void DrawCanvas() {
-    if(!vg)return;
-    nvgBeginFrame(vg,(float)abs_ScreenX,(float)abs_ScreenY,1.0f);
-    float cx=(float)abs_ScreenX*0.5f;
+    if (!vg) return;
+    nvgBeginFrame(vg, (float)abs_ScreenX, (float)abs_ScreenY, 1.0f);
+    float cx = (float)abs_ScreenX * 0.5f;
+
     DrawPlayerNVG(vg);
-    if(g_fovCircle&&g_Aim.enable){
-        float r=g_Aim.fov;
-        if(g_Aim.dynFov&&g_isFiring&&g_Target.valid&&g_aimDs<1e8f)r=g_aimDs;
-        if(r<20)r=20;
-        nvgBeginPath(vg); nvgCircle(vg,px,py,r);
-        nvgStrokeColor(vg,nvgRGBA(255,140,0,255)); nvgStrokeWidth(vg,2.0f); nvgStroke(vg);
+
+    if (g_fovCircle && g_Aim.enable) {
+        float r = g_Aim.fov;
+        if (g_Aim.dynFov && g_isFiring && g_Target.valid && g_aimDs < 1e8f) r = g_aimDs;
+        if (r < 20.0f) r = 20.0f;
+        nvgBeginPath(vg);
+        nvgCircle(vg, px, py, r);
+        nvgStrokeColor(vg, nvgRGBA(255, 140, 0, 255));
+        nvgStrokeWidth(vg, 2.0f);
+        nvgStroke(vg);
     }
-    DrawLogoNVG(vg,(float)abs_ScreenX/4.0f,(float)abs_ScreenY/10.0f,35.0f);
-    if(g_titleOutline){
-        DrawOutlinedTextNVG(vg,g_font_agency,"Asuka追踪 @Asuka1314",{cx,40.0f*UI_SCALE()},40.0f*UI_SCALE(),nvgRGBA(255,255,255,255),nvgRGBA(0,0,0,255),true,2.0f);
-        char infoBuf[64]; snprintf(infoBuf,sizeof(infoBuf),"真人: %d  人机: %d",RealCount,BotCount);
-        DrawOutlinedTextNVG(vg,g_font_agency,infoBuf,{cx,92.0f*UI_SCALE()},24.0f*UI_SCALE(),nvgRGBA(255,255,255,255),nvgRGBA(0,0,0,255),true,2.0f);
+
+    DrawLogoNVG(vg, (float)abs_ScreenX/4.0f, (float)abs_ScreenY/10.0f, 35.0f);
+
+    if (g_titleOutline) {
+        DrawOutlinedTextNVG(vg, g_font_agency, "Asuka追踪 @Asuka1314", {cx, 40.0f*UI_SCALE()}, 40.0f*UI_SCALE(),
+                            nvgRGBA(255,255,255,255), nvgRGBA(0,0,0,255), true, 2.0f);
+        char infoBuf[64]; snprintf(infoBuf, sizeof(infoBuf), "真人: %d  人机: %d", RealCount, BotCount);
+        DrawOutlinedTextNVG(vg, g_font_agency, infoBuf, {cx, 92.0f*UI_SCALE()}, 24.0f*UI_SCALE(),
+                            nvgRGBA(255,255,255,255), nvgRGBA(0,0,0,255), true, 2.0f);
     } else {
-        DrawSoftTextNVG(vg,g_font_agency,"Asuka追踪 @Asuka1314",{cx,60.0f*UI_SCALE()},40.0f,nvgRGBA(255,255,255,255),true);
-        char infoBuf[64]; snprintf(infoBuf,sizeof(infoBuf),"真人: %d  人机: %d",RealCount,BotCount);
-        DrawSoftTextNVG(vg,g_font_agency,infoBuf,{cx,105.0f*UI_SCALE()},24.0f,nvgRGBA(255,255,255,255),true);
+        DrawSoftTextNVG(vg, g_font_agency, "Asuka追踪 @Asuka1314", {cx, 60.0f*UI_SCALE()}, 40.0f, nvgRGBA(255,255,255,255), true);
+        char infoBuf[64]; snprintf(infoBuf, sizeof(infoBuf), "真人: %d  人机: %d", RealCount, BotCount);
+        DrawSoftTextNVG(vg, g_font_agency, infoBuf, {cx, 105.0f*UI_SCALE()}, 24.0f, nvgRGBA(255,255,255,255), true);
     }
+
     nvgEndFrame(vg);
 }
 
-
-// ==================== 触控优化样式（只生效一次）====================
-static void ApplyMenuStyle() {
+// ==================== 深色简洁样式（只生效一次）====================
+static void ApplyDarkStyle() {
     static bool done = false;
     if (done) return;
     done = true;
+    ImGui::StyleColorsDark();
     ImGuiStyle& st = ImGui::GetStyle();
-    st.WindowRounding  = 12.0f;
-    st.FrameRounding   = 8.0f;
-    st.GrabRounding    = 8.0f;
-    st.ScrollbarRounding = 8.0f;
-    st.FramePadding    = ImVec2(14, 10);   // 控件命中区加大
-    st.ItemSpacing     = ImVec2(12, 14);   // 控件间距拉开
-    st.ItemInnerSpacing= ImVec2(10, 6);
-    st.GrabMinSize     = 24.0f;            // 滑块拖拽块更大
-    st.ScrollbarSize   = 18.0f;
-    st.WindowPadding   = ImVec2(14, 14);
+    st.WindowRounding = 10; st.FrameRounding = 8; st.GrabRounding = 8;
+    st.ChildRounding = 8; st.PopupRounding = 8; st.ScrollbarRounding = 10;
+    st.FramePadding = ImVec2(10,8); st.ItemSpacing = ImVec2(10,10);
+    st.ItemInnerSpacing = ImVec2(8,6); st.GrabMinSize = 16; st.WindowPadding = ImVec2(14,14);
+    ImVec4* c = st.Colors;
+    c[ImGuiCol_WindowBg]      = ImVec4(0.07f,0.08f,0.10f,0.96f);
+    c[ImGuiCol_ChildBg]       = ImVec4(0.10f,0.11f,0.14f,0.60f);
+    c[ImGuiCol_FrameBg]       = ImVec4(0.16f,0.18f,0.22f,1.00f);
+    c[ImGuiCol_FrameBgHovered]= ImVec4(0.22f,0.25f,0.30f,1.00f);
+    c[ImGuiCol_FrameBgActive] = ImVec4(0.26f,0.30f,0.36f,1.00f);
+    c[ImGuiCol_TitleBg]       = ImVec4(0.06f,0.07f,0.09f,1.00f);
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.09f,0.10f,0.13f,1.00f);
+    c[ImGuiCol_Header]        = ImVec4(0.18f,0.35f,0.60f,0.80f);
+    c[ImGuiCol_HeaderHovered] = ImVec4(0.22f,0.42f,0.70f,0.90f);
+    c[ImGuiCol_HeaderActive]  = ImVec4(0.25f,0.47f,0.78f,1.00f);
+    c[ImGuiCol_Button]        = ImVec4(0.18f,0.35f,0.60f,0.90f);
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.22f,0.42f,0.70f,1.00f);
+    c[ImGuiCol_ButtonActive]  = ImVec4(0.25f,0.47f,0.78f,1.00f);
+    c[ImGuiCol_CheckMark]     = ImVec4(0.35f,0.65f,1.00f,1.00f);
+    c[ImGuiCol_SliderGrab]    = ImVec4(0.35f,0.65f,1.00f,0.90f);
+    c[ImGuiCol_SliderGrabActive]=ImVec4(0.50f,0.75f,1.00f,1.00f);
+    c[ImGuiCol_Tab]           = ImVec4(0.12f,0.14f,0.18f,1.00f);
+    c[ImGuiCol_TabHovered]    = ImVec4(0.22f,0.42f,0.70f,0.90f);
+    c[ImGuiCol_TabActive]     = ImVec4(0.18f,0.35f,0.60f,1.00f);
+    c[ImGuiCol_Separator]     = ImVec4(0.25f,0.28f,0.34f,0.60f);
 }
 
-// ==================== 分段大按钮（触发/部位选择）====================
-static void Segmented(int* cur, const char* const labels[], int n) {
-    float w = (ImGui::GetContentRegionAvail().x - (n - 1) * 8.0f) / n;
-    for (int i = 0; i < n; i++) {
-        if (i) ImGui::SameLine(0, 8);
-        bool on = (*cur == i);
-        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 1.0f, 1.0f));
-        if (ImGui::Button(labels[i], ImVec2(w, 44))) *cur = i;
-        if (on) ImGui::PopStyleColor();
-    }
-}
-
-// ==================== 双列复选框 ====================
-static void CB2(const char* label, bool* v) {
-    ImGui::Checkbox(label, v);
-}
-
-// ==================== 主菜单 ====================
+// ==================== 主菜单（深色简洁，固定大小不可拉伸）====================
 void Layout_tick_UI(bool* main_thread_flag) {
     UpdateGameData();
+    ApplyDarkStyle();
+    static bool showMenu = true;
 
-    // ===== 一次性触控样式优化 =====
-    static bool styleDone = false;
-    if (!styleDone) {
-        ImGuiStyle& st = ImGui::GetStyle();
-        st.FramePadding     = ImVec2(12, 8);
-        st.ItemSpacing      = ImVec2(10, 12);
-        st.ItemInnerSpacing = ImVec2(8, 6);
-        st.GrabMinSize      = 18.0f;
-        st.WindowRounding   = 10.0f;
-        st.FrameRounding    = 6.0f;
-        st.ScrollbarSize    = 14.0f;
-        styleDone = true;
+    if (!showMenu) {
+        ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(132, 48));
+        ImGui::Begin("##OpenBtn", nullptr,
+            ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoCollapse|
+            ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoScrollbar);
+        if (ImGui::Button("打开菜单", ImVec2(-1,-1))) showMenu = true;
+        ImGui::End();
+        g_window = ImGui::GetCurrentWindow();
+        return;
     }
 
-    static int style_idx = 0;
-    ImGui::SetNextWindowSize(ImVec2(560, 720), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Asuka追锁 ###AsukaMenu", main_thread_flag);
+    ImGui::SetNextWindowSize(ImVec2(430, 620), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Asuka追锁", nullptr, ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize);
 
-    if (::permeate_record_ini) {
-        ImGui::SetWindowPos({LastCoordinate.Pos_x, LastCoordinate.Pos_y});
-        ImGui::SetWindowSize({LastCoordinate.Size_x, LastCoordinate.Size_y});
-        permeate_record_ini = false;
-    }
-
-    // ===== 顶部状态栏（常驻）=====
-    ImGui::TextColored(ImVec4(0,1,1,1), "断点:%s  触发:%llu  目标:%s  速:%.0f  屏距:%.0f",
-        g_bpSet ? "是" : "否", (unsigned long long)g_bpHits,
-        g_Target.valid ? "有" : "无", g_BulletSpeed, g_aimDs);
+    // 顶部：初始化 + 隐藏 + 状态
+    if (ImGui::Button(初始化 ? "重新初始化" : "初始化绘制", ImVec2(ImGui::GetContentRegionAvail().x*0.62f, 40))) DrawInit();
+    ImGui::SameLine();
+    if (ImGui::Button("隐藏菜单", ImVec2(-1, 40))) showMenu = false;
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.45f,0.75f,1.0f,1.0f), "断点:%s 目标:%s 触发:%llu 速:%.0f",
+        g_bpSet?"是":"否", g_Target.valid?"有":"无", (unsigned long long)g_bpHits, g_BulletSpeed);
     ImGui::Separator();
 
-    // ===== 顶部大按钮行 =====
-    if (ImGui::Button("初始化绘制", ImVec2(ImGui::GetContentRegionAvail().x * 0.62f, 48))) DrawInit();
-    ImGui::SameLine();
-    if (ImGui::Button("过录制", ImVec2(ImGui::GetContentRegionAvail().x * 0.36f, 48))) {
-        ::permeate_record = !::permeate_record;
-        if (::permeate_record) ::permeate_record_ini = true;
-    }
-    ImGui::Spacing();
-
-    // ===== 分页签 =====
-    if (ImGui::BeginTabBar("MainTab")) {
-
-        // ---------- 绘制 ----------
+    if (ImGui::BeginTabBar("##tabs")) {
         if (ImGui::BeginTabItem("绘制")) {
-            ImGui::Columns(2, "drawcols", false);
-            ImGui::Checkbox("显示方框", &DrawIo[1]);
-            ImGui::Checkbox("显示骨骼", &DrawIo[4]);
-            ImGui::Checkbox("显示信息", &DrawIo[5]);
-            ImGui::Checkbox("显示血量", &DrawIo[6]);
-            ImGui::Checkbox("显示载具", &DrawIo[8]);
+            ImGui::Columns(2, "##draw", false);
+            ImGui::Checkbox("方框", &DrawIo[1]);
+            ImGui::Checkbox("骨骼", &DrawIo[4]);
+            ImGui::Checkbox("信息", &DrawIo[5]);
+            ImGui::Checkbox("血量", &DrawIo[6]);
+            ImGui::Checkbox("载具", &DrawIo[8]);
             ImGui::NextColumn();
-            ImGui::Checkbox("显示射线", &DrawIo[3]);
-            ImGui::Checkbox("显示距离", &DrawIo[2]);
-            ImGui::Checkbox("显示手持", &DrawIo[9]);
-            ImGui::Checkbox("敌人地址", &DrawIo[7]);
+            ImGui::Checkbox("射线", &DrawIo[3]);
+            ImGui::Checkbox("距离", &DrawIo[2]);
+            ImGui::Checkbox("手持", &DrawIo[9]);
+            ImGui::Checkbox("地址", &DrawIo[7]);
             ImGui::Checkbox("忽略人机", &忽略人机);
             ImGui::Columns(1);
             ImGui::Separator();
-            ImGui::Checkbox("FOV圈", &g_fovCircle);      ImGui::SameLine();
-            ImGui::Checkbox("动态圈", &g_Aim.dynFov);    ImGui::SameLine();
+            ImGui::Checkbox("FOV圈", &g_fovCircle); ImGui::SameLine();
+            ImGui::Checkbox("动态圈", &g_Aim.dynFov); ImGui::SameLine();
             ImGui::Checkbox("标题描边", &g_titleOutline);
             ImGui::EndTabItem();
         }
-
-        // ---------- 追踪 ----------
         if (ImGui::BeginTabItem("追踪")) {
             {
                 bool on = g_Aim.enable;
-                if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f,0.2f,0.2f,1.0f));
-                if (ImGui::Button(on ? "追锁:开" : "追锁:关", ImVec2(-1, 50))) g_Aim.enable = !on;
-                if (on) ImGui::PopStyleColor();
+                ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.75f,0.22f,0.20f,1.0f) : ImVec4(0.20f,0.45f,0.75f,1.0f));
+                if (ImGui::Button(on ? "追锁:开" : "追锁:关", ImVec2(-1, 44))) g_Aim.enable = !on;
+                ImGui::PopStyleColor();
             }
             ImGui::Spacing();
-
             ImGui::TextDisabled("触发 / 部位");
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.48f);
-            ImGui::Combo("##触发", &g_Aim.trigger, "总是\0开火\0开镜\0");
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x*0.48f);
+            ImGui::Combo("##trig", &g_Aim.trigger, "总是\0开火\0开镜\0");
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-            ImGui::Combo("##部位", &g_Aim.part, "头部\0胸部\0盆骨\0");
-
+            ImGui::SetNextItemWidth(-1);
+            ImGui::Combo("##part", &g_Aim.part, "头部\0胸部\0盆骨\0");
             ImGui::TextDisabled("弹道");
-            ImGui::Checkbox("瞬时弹道(推荐)", &g_Aim.instant);
+            ImGui::Checkbox("瞬时弹道", &g_Aim.instant);
             if (!g_Aim.instant) {
                 ImGui::Checkbox("预判", &g_Aim.predict);
-                if (g_Aim.predict) { ImGui::SameLine(); ImGui::SetNextItemWidth(110); ImGui::SliderFloat("##pred", &g_Aim.predScale, 0.0f, 3.0f, "%.2f"); }
-                ImGui::SetNextItemWidth(150); ImGui::SliderFloat("下坠系数", &g_Aim.dropCoef, 0.0f, 1200.0f, "%.0f");
+                if (g_Aim.predict){ ImGui::SameLine(); ImGui::SetNextItemWidth(110); ImGui::SliderFloat("##pred", &g_Aim.predScale, 0.0f, 3.0f, "%.2f"); }
+                ImGui::SetNextItemWidth(150); ImGui::SliderFloat("下坠", &g_Aim.dropCoef, 0.0f, 1200.0f, "%.0f");
                 ImGui::SameLine(); ImGui::SetNextItemWidth(110); ImGui::SliderFloat("压枪", &g_Aim.recoilComp, 0.0f, 20.0f, "%.1f");
             }
-
+            ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("枪高补偿", &g_Aim.gunZ, 0.0f, 250.0f, "%.0f cm");
             ImGui::TextDisabled("辅助");
             ImGui::Checkbox("陀螺仪兜底", &g_Aim.gyro);
-            if (g_Aim.gyro) {
-                ImGui::SameLine(); ImGui::SetNextItemWidth(110); ImGui::SliderFloat("##gyro", &g_Aim.gyroStrength, 0.01f, 1.0f, "%.2f");
-                ImGui::SameLine(); ImGui::Checkbox("反向", &g_Aim.gyroFlip);
-            }
+            if (g_Aim.gyro){ ImGui::SameLine(); ImGui::SetNextItemWidth(110); ImGui::SliderFloat("##gy", &g_Aim.gyroStrength, 0.01f, 1.0f, "%.2f"); ImGui::SameLine(); ImGui::Checkbox("反向", &g_Aim.gyroFlip); }
             ImGui::Checkbox("概率模式", &g_Aim.prob);
-            if (g_Aim.prob) { ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::SliderFloat("##rate", &g_Aim.probRate, 0.05f, 1.0f, "%.2f"); }
+            if (g_Aim.prob){ ImGui::SameLine(); ImGui::SetNextItemWidth(100); ImGui::SliderFloat("##rate", &g_Aim.probRate, 0.05f, 1.0f, "%.2f"); }
             ImGui::Checkbox("写回自测(抬头60°)", &g_Aim.forceTest);
-
             ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("FOV", &g_Aim.fov, 50.0f, 800.0f, "%.0f");
-            if (g_bpSet) { if (ImGui::Button("移除断点")) { driver->hwbp_remove(); g_bpSet = false; } }
+            if (g_bpSet){ if (ImGui::Button("移除断点")){ driver->hwbp_remove(); g_bpSet = false; } }
             ImGui::EndTabItem();
         }
-
-        // ---------- 系统 ----------
         if (ImGui::BeginTabItem("系统")) {
-            ImGui::TextDisabled("主题");
-            ImGui::RadioButton("白", &style_idx, 0); ImGui::SameLine();
-            ImGui::RadioButton("蓝", &style_idx, 1); ImGui::SameLine();
-            ImGui::RadioButton("紫", &style_idx, 2);
-            switch (style_idx) { case 0: ImGui::StyleColorsLight(); break; case 1: ImGui::StyleColorsDark(); break; case 2: ImGui::StyleColorsClassic(); break; }
-            ImGui::Separator();
+            if (ImGui::Checkbox("过录制", &::permeate_record)) ::permeate_record_ini = true;
             ImGui::SetNextItemWidth(-1); ImGui::SliderFloat("刷新帧率", &FPS, 60.0f, 144.0f, "%.0f");
             ImGui::Separator();
             ImGui::TextDisabled("调试");
-            ImGui::BulletText("进程:%d", pid);
-            ImGui::BulletText("矩阵:%lx", Matrix);
-            ImGui::BulletText("自身结构:%lx", MySelf);
-            ImGui::BulletText("世界:%lx", Arrayaddr);
-            ImGui::BulletText("数量:%d", Count);
+            ImGui::BulletText("进程:%d 矩阵:%lx", pid, Matrix);
+            ImGui::BulletText("自身:%lx 世界:%lx 数量:%d", MySelf, Arrayaddr, Count);
             ImGui::Separator();
-            if (ImGui::Button("安全退出", ImVec2(-1, 44))) { driver->hwbp_remove(); exit(0); }
+            if (ImGui::Button("安全退出", ImVec2(-1, 40))) { driver->hwbp_remove(); exit(0); }
             ImGui::EndTabItem();
         }
-
         ImGui::EndTabBar();
     }
-
-    ImGui::TextColored(ImVec4(1,0,1,1), "%.1f FPS", ImGui::GetIO().Framerate);
     g_window = ImGui::GetCurrentWindow();
     ImGui::End();
 }
